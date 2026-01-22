@@ -146,12 +146,13 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
     print("1. Default (all-MiniLM-L6-v2) - Free, runs locally")
     print("2. OpenAI - Better quality, requires API key")
     print("3. Gemini - Better quality, requires API key")
+    print("4. Local (Ollama, vLLM, LM Studio) - Runs locally, free, GPU support")
 
     while True:
-        choice = input("\nChoose embedding model (1-3): ").strip()
-        if choice in ["1", "2", "3"]:
+        choice = input("\nChoose embedding model (1-4): ").strip()
+        if choice in ["1", "2", "3", "4"]:
             break
-        print("Please enter 1, 2, or 3")
+        print("Please enter 1, 2, 3, or 4")
 
     config = {}
 
@@ -226,6 +227,101 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
             print(f"Using custom Gemini base URL: {base_url}")
         else:
             print("Using default Gemini base URL")
+
+    elif choice == "4":
+        config["embedding_model"] = "local"
+
+        # Choose local provider
+        print("\nLocal embedding providers:")
+        print("1. Ollama (recommended, supports GPU layers)")
+        print("2. vLLM (high performance, OpenAI-compatible)")
+        print("3. LM Studio (user-friendly, OpenAI-compatible)")
+        print("4. llamafile (single-file models, OpenAI-compatible)")
+
+        while True:
+            provider_choice = input("Choose provider (1-4): ").strip()
+            if provider_choice in ["1", "2", "3", "4"]:
+                break
+            print("Please enter 1, 2, 3, or 4")
+
+        provider_map = {"1": "ollama", "2": "vllm", "3": "lm-studio", "4": "llamafile"}
+        provider = provider_map[provider_choice]
+
+        # Choose model
+        print("\nRecommended local embedding models:")
+        if provider == "ollama":
+            print("1. nomic-embed-text (default, 137M params)")
+            print("2. mxbai-embed-large (higher quality, 334M params)")
+            print("3. all-minilm (lightweight, 90M params)")
+        elif provider in ("vllm", "lm-studio", "llamafile"):
+            print("1. nomic-embed-text (default)")
+            print("2. BAAI/bge-m3 (multilingual)")
+            print("3. thenlper/gte-large (high quality)")
+
+        while True:
+            model_choice = input("Choose model (1-3) or enter custom name: ").strip()
+            if model_choice in ["1", "2", "3"]:
+                break
+
+        # Default model names per provider
+        if provider == "ollama":
+            model_map = {"1": "nomic-embed-text", "2": "mxbai-embed-large", "3": "all-minilm"}
+        else:
+            model_map = {"1": "nomic-embed-text", "2": "BAAI/bge-m3", "3": "thenlper/gte-large"}
+
+        model = model_map.get(model_choice, model_choice if model_choice not in ["1", "2", "3"] else model_map["1"])
+
+        # Get server URL
+        default_url = "http://localhost:11434" if provider == "ollama" else "http://localhost:8000/v1"
+        base_url = input(f"Enter server URL [{default_url}]: ").strip()
+        if not base_url:
+            base_url = default_url
+        print(f"Using server URL: {base_url}")
+
+        # Configure GPU layers (Ollama only)
+        if provider == "ollama":
+            print("\nGPU Configuration:")
+            print("Enter 0 for CPU only, or the number of GPU layers to offload.")
+            print("Higher values use more GPU memory but may be faster.")
+            while True:
+                raw = input("GPU layers [0]: ").strip()
+                if raw == "":
+                    gpu_layers = 0
+                    break
+                try:
+                    gpu_layers = int(raw)
+                    if gpu_layers >= 0:
+                        break
+                    print("Please enter a non-negative number")
+                except ValueError:
+                    print("Please enter a valid number")
+            print(f"Using {gpu_layers} GPU layers" if gpu_layers > 0 else "Using CPU only")
+
+        # Configure context window
+        default_ctx = 4096
+        while True:
+            raw = input(f"Context window size [{default_ctx}]: ").strip()
+            if raw == "":
+                num_ctx = default_ctx
+                break
+            try:
+                num_ctx = int(raw)
+                if num_ctx > 0:
+                    break
+                print("Please enter a positive number")
+            except ValueError:
+                print("Please enter a valid number")
+
+        config["embedding_config"] = {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "num_ctx": num_ctx
+        }
+        if provider == "ollama":
+            config["embedding_config"]["gpu_layers"] = gpu_layers
+
+        print(f"\nLocal embedding configured: {provider} with model '{model}'")
 
     # Configure update frequency
     print("\n=== Database Update Configuration ===")
@@ -432,6 +528,18 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
                 env_settings["GEMINI_EMBEDDING_MODEL"] = model
             if base_url := embedding_config.get("base_url"):
                 env_settings["GEMINI_BASE_URL"] = base_url
+
+        elif semantic_config.get("embedding_model") == "local":
+            if provider := embedding_config.get("provider"):
+                env_settings["ZOTERO_LOCAL_EMBEDDING_PROVIDER"] = provider
+            if model := embedding_config.get("model"):
+                env_settings["ZOTERO_LOCAL_EMBEDDING_MODEL"] = model
+            if base_url := embedding_config.get("base_url"):
+                env_settings["ZOTERO_LOCAL_EMBEDDING_URL"] = base_url
+            if gpu_layers := embedding_config.get("gpu_layers"):
+                env_settings["ZOTERO_LOCAL_EMBEDDING_GPU_LAYERS"] = str(gpu_layers)
+            if num_ctx := embedding_config.get("num_ctx"):
+                env_settings["ZOTERO_LOCAL_EMBEDDING_NUM_CTX"] = str(num_ctx)
 
     # Add or update zotero config
     config["mcpServers"]["zotero"] = {

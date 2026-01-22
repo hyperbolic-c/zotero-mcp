@@ -17,6 +17,8 @@ import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from chromadb.config import Settings
 
+from .embed_providers import create_local_embedding_function
+
 logger = logging.getLogger(__name__)
 
 
@@ -217,6 +219,21 @@ class ChromaClient:
         elif self.embedding_model == "embeddinggemma":
             model_name = self.embedding_config.get("model_name", "google/embeddinggemma-300m")
             return HuggingFaceEmbeddingFunction(model_name=model_name)
+
+        elif self.embedding_model == "local":
+            # Local embedding model (Ollama, vLLM, LM Studio, etc.)
+            provider = self.embedding_config.get("provider", "ollama")
+            model = self.embedding_config.get("model", "nomic-embed-text")
+            base_url = self.embedding_config.get("base_url", "http://localhost:11434")
+            gpu_layers = self.embedding_config.get("gpu_layers", 0)
+            num_ctx = self.embedding_config.get("num_ctx", 4096)
+            return create_local_embedding_function(
+                provider=provider,
+                model=model,
+                base_url=base_url,
+                gpu_layers=gpu_layers,
+                num_ctx=num_ctx
+            )
 
         elif self.embedding_model not in ["default", "openai", "gemini"]:
             # Treat any other value as a HuggingFace model name
@@ -431,6 +448,22 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
             }
             if gemini_base_url:
                 config["embedding_config"]["base_url"] = gemini_base_url
+
+    elif config["embedding_model"] == "local":
+        # Load local embedding config from environment or use defaults
+        provider = os.getenv("ZOTERO_LOCAL_EMBEDDING_PROVIDER", "ollama")
+        model = os.getenv("ZOTERO_LOCAL_EMBEDDING_MODEL", "nomic-embed-text")
+        base_url = os.getenv("ZOTERO_LOCAL_EMBEDDING_URL", "http://localhost:11434")
+        gpu_layers = int(os.getenv("ZOTERO_LOCAL_EMBEDDING_GPU_LAYERS", "0"))
+        num_ctx = int(os.getenv("ZOTERO_LOCAL_EMBEDDING_NUM_CTX", "4096"))
+
+        config["embedding_config"] = {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "gpu_layers": gpu_layers,
+            "num_ctx": num_ctx
+        }
 
     return ChromaClient(
         collection_name=config["collection_name"],

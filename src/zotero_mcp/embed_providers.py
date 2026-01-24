@@ -116,7 +116,7 @@ class OpenAILocalEmbeddingFunction(EmbeddingFunction):
         if not base_url.endswith('/v1'):
             base_url = f"{base_url}/v1"
         self.base_url = base_url
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "not-needed")
+        self.api_key = api_key if api_key else os.getenv("OPENAI_API_KEY")
 
     def name(self) -> str:
         """Return the name of this embedding function."""
@@ -137,7 +137,7 @@ class OpenAILocalEmbeddingFunction(EmbeddingFunction):
         }
 
         # Add authorization header if API key is provided
-        if self.api_key and self.api_key != "not-needed":
+        if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         embeddings = []

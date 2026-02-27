@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from zotero_mcp.retrievers.advanced_rag import AdvancedRAGRetriever
+import pytest
+
+from zotero_mcp.retrievers.advanced_rag import AdvancedRAGRetriever, CandidateChunk
 
 
 class FakeChromaClient:
@@ -87,6 +89,212 @@ class FakeReader:
     def _iter_parent_attachments(self, parent_item_id):
         if parent_item_id == 1:
             yield ("ATT1", "storage:a.pdf", "application/pdf")
+
+
+def _make_retriever(md_root, monkeypatch, reranker_enabled=False):
+    from zotero_mcp.retrievers import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
+
+    engine = FakeEngine(md_root)
+    client = FakeChromaClient()
+    return AdvancedRAGRetriever(engine=engine, chroma_client=client), client
+
+
+# --- md_root default / warning tests ---
+
+def test_md_root_default_is_empty_string():
+    """The in-code default md_root must be empty, not a developer-specific path."""
+    from zotero_mcp import semantic_search as ss
+    defaults = ss.ZoteroSemanticSearch._get_advanced_rag_defaults()
+    assert defaults["md_root"] == "", (
+        f"md_root default must be empty string, got: {defaults['md_root']!r}"
+    )
+
+
+def test_ingest_warns_when_md_root_empty(monkeypatch, caplog, tmp_path):
+    """ingest_data warns the user when retriever_mode=advanced_rag but md_root is empty."""
+    import logging
+    from zotero_mcp.retrievers import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
+
+    engine = FakeEngine("")  # empty md_root
+    client = FakeChromaClient()
+    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.retrievers.advanced_rag"):
+        retriever.ingest_data()
+
+    assert any("md_root" in record.message for record in caplog.records), (
+        "Expected a warning mentioning 'md_root' when md_root is empty"
+    )
+
+
+# --- ingest stats count chunks not items ---
+
+def test_ingest_stats_use_chunk_keys(monkeypatch, tmp_path):
+    """Stats returned by ingest_data use 'added_chunks'/'updated_chunks', not 'added_items'."""
+    md_root = tmp_path / "md"
+    (md_root / "ATT1").mkdir(parents=True)
+    (md_root / "ATT1" / "a.md").write_text("# Intro\n" + "x " * 100, encoding="utf-8")
+
+    retriever, _ = _make_retriever(md_root, monkeypatch)
+    stats = retriever.ingest_data()
+    assert "added_chunks" in stats, "Expected 'added_chunks' key in ingest stats"
+    assert "updated_chunks" in stats, "Expected 'updated_chunks' key in ingest stats"
+    assert "added_items" not in stats, "Unexpected 'added_items' in advanced_rag stats"
+    assert "updated_items" not in stats, "Unexpected 'updated_items' in advanced_rag stats"
+
+
+# --- ingest exception logging ---
+
+def test_ingest_logs_item_errors(monkeypatch, tmp_path, caplog):
+    """Errors processing individual items must be logged, not silently counted."""
+    import logging
+    from zotero_mcp.retrievers import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
+
+    engine = FakeEngine(str(tmp_path / "md"))
+    client = FakeChromaClient()
+
+    # Force _build_item_chunks to raise on item I1
+    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    original_build = retriever._build_item_chunks
+
+    def _broken_build(item, attachment_keys):
+        if item.get("key") == "I1":
+            raise RuntimeError("simulated parse failure")
+        return original_build(item, attachment_keys)
+
+    monkeypatch.setattr(retriever, "_build_item_chunks", _broken_build)
+
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.retrievers.advanced_rag"):
+        stats = retriever.ingest_data()
+
+    assert stats["errors"] == 1
+    assert any("I1" in record.message for record in caplog.records), (
+        "Expected a log message mentioning item key 'I1'"
+    )
+
+
+# --- reranker error status ---
+
+def test_reranker_init_error_distinguishes_import_vs_runtime(monkeypatch):
+    """_init_reranker returns 'degraded:package_missing' for ImportError,
+    'degraded:init_error:...' for other exceptions."""
+    from zotero_mcp.retrievers import advanced_rag
+
+    engine = FakeEngine("")
+    engine.semantic_config["advanced_rag"]["reranker"] = {
+        "enabled": True,
+        "backend": "flashrank",
+        "model_name": "ms-marco-MiniLM-L-12-v2",
+    }
+    client = FakeChromaClient()
+
+    # Simulate ImportError
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "flashrank",
+        None,  # makes `import flashrank` raise ImportError
+    )
+    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    assert retriever._reranker_status == "degraded:package_missing"
+
+    # Simulate runtime error (e.g. bad model name, ONNX fail) by patching Ranker
+    import types
+    fake_flashrank = types.ModuleType("flashrank")
+
+    class BadRanker:
+        def __init__(self, **kwargs):
+            raise OSError("model not found")
+
+    fake_flashrank.Ranker = BadRanker
+    monkeypatch.setitem(__import__("sys").modules, "flashrank", fake_flashrank)
+
+    retriever2 = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    assert retriever2._reranker_status.startswith("degraded:init_error:"), (
+        f"Expected 'degraded:init_error:...', got: {retriever2._reranker_status!r}"
+    )
+
+
+# --- top_n wired into reranker ---
+
+def test_rerank_passes_top_n_to_ranker(monkeypatch, tmp_path):
+    """_rerank must pass top_n from config to ranker.rank()."""
+    import types
+    from zotero_mcp.retrievers import advanced_rag
+
+    engine = FakeEngine(str(tmp_path))
+    engine.semantic_config["advanced_rag"]["reranker"] = {
+        "enabled": True,
+        "backend": "flashrank",
+        "model_name": "ms-marco-MiniLM-L-12-v2",
+        "top_n": 3,
+    }
+
+    captured = {}
+
+    fake_flashrank = types.ModuleType("flashrank")
+
+    class FakeRanker:
+        def __init__(self, **kwargs):
+            pass
+
+        def rank(self, request, top_n=None):
+            captured["top_n"] = top_n
+            # Return first top_n passages with mock scores
+            passages = request.passages[:top_n] if top_n else request.passages
+            return [{"id": str(i), "score": 0.9} for i in range(len(passages))]
+
+    class FakeRerankRequest:
+        def __init__(self, query, passages):
+            self.query = query
+            self.passages = passages
+
+    fake_flashrank.Ranker = FakeRanker
+    fake_flashrank.RerankRequest = FakeRerankRequest
+    monkeypatch.setitem(__import__("sys").modules, "flashrank", fake_flashrank)
+
+    client = FakeChromaClient()
+    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+
+    # Build some fake candidates
+    candidates = [
+        CandidateChunk("I1", "ATT1", f"text {i}", {}, 0.9 - i * 0.1, 0.9 - i * 0.1)
+        for i in range(5)
+    ]
+    retriever._rerank("query", candidates)
+
+    assert captured.get("top_n") == 3, (
+        f"Expected top_n=3 passed to ranker.rank(), got: {captured.get('top_n')!r}"
+    )
+
+
+# --- delete_item delegates through retriever in advanced_rag mode ---
+
+def test_delete_item_advanced_rag_raises_not_implemented(monkeypatch):
+    """delete_item must raise NotImplementedError (not silently fail) for advanced_rag mode."""
+    from zotero_mcp import semantic_search as ss
+
+    class StubRetriever:
+        def ingest_data(self, **kw): return {}
+        def search(self, **kw): return {}
+        def get_database_status(self): return {"collection_info": {}}
+
+    monkeypatch.setattr(ss, "get_zotero_client", lambda: object())
+    monkeypatch.setattr(ss, "create_retriever", lambda mode, engine: StubRetriever())
+
+    search = ss.ZoteroSemanticSearch(chroma_client=None)
+    search.retriever_mode = "advanced_rag"
+
+    with pytest.raises(NotImplementedError):
+        search.delete_item("SOMEKEY")
 
 
 def test_advanced_rag_ingest_and_item_level_search(monkeypatch, tmp_path):

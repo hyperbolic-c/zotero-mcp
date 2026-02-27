@@ -66,28 +66,33 @@ class ZoteroSemanticSearch:
         if self.chroma_client is None:
             self.chroma_client = getattr(self.retriever, "chroma_client", None)
 
+    @staticmethod
+    def _get_advanced_rag_defaults() -> dict[str, Any]:
+        """Return the in-code defaults for the advanced_rag config section."""
+        return {
+            "md_root": "",
+            "chunk": {
+                "max_chars": 1600,
+                "overlap_chars": 200,
+                "heading_first": True,
+                "min_chunk_chars": 120,
+            },
+            "ingest": {"strip_images": True},
+            "reranker": {
+                "enabled": True,
+                "backend": "flashrank",
+                "model_name": "ms-marco-MiniLM-L-12-v2",
+                "local_model_path": None,
+                "top_n": 8,
+            },
+            "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.85},
+        }
+
     def _load_semantic_config(self) -> dict[str, Any]:
         """Load semantic search configuration with backward-compatible defaults."""
         config: dict[str, Any] = {
             "retriever_mode": "legacy_metadata",
-            "advanced_rag": {
-                "md_root": "/Users/liam/projects/pyzotero/zotero_md_output",
-                "chunk": {
-                    "max_chars": 1600,
-                    "overlap_chars": 200,
-                    "heading_first": True,
-                    "min_chunk_chars": 120,
-                },
-                "ingest": {"strip_images": True},
-                "reranker": {
-                    "enabled": True,
-                    "backend": "flashrank",
-                    "model_name": "ms-marco-MiniLM-L-12-v2",
-                    "local_model_path": None,
-                    "top_n": 8,
-                },
-                "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.85},
-            },
+            "advanced_rag": self._get_advanced_rag_defaults(),
         }
         if self.config_path and os.path.exists(self.config_path):
             try:

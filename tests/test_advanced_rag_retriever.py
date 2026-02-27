@@ -322,3 +322,89 @@ def test_advanced_rag_ingest_and_item_level_search(monkeypatch, tmp_path):
     assert result["total_found"] == 2
     assert result["results"][0]["item_key"] == "I1"
     assert result["results"][0]["evidence"][0]["chunk_kind"] == "content"
+
+
+# --- batched ingest tests ---
+
+
+class BatchTrackingChromaClient(FakeChromaClient):
+    """FakeChromaClient that records each upsert call separately."""
+
+    def __init__(self):
+        super().__init__()
+        self.upsert_calls: list[list[str]] = []  # list of id-lists per call
+        self.all_ids: list[str] = []
+
+    def upsert_documents(self, documents, metadatas, ids):
+        self.upsert_calls.append(list(ids))
+        self.all_ids.extend(ids)
+        # keep self.ids pointing to accumulated set for compatibility
+        self.ids = self.all_ids
+
+
+def _make_retriever_with_batch_cfg(md_root, monkeypatch, batch_size, sleep_seconds=0.0):
+    from zotero_mcp.retrievers import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
+
+    engine = FakeEngine(md_root)
+    # Override ingest config with batch settings
+    engine.semantic_config["advanced_rag"]["ingest"] = {
+        "strip_images": True,
+        "batch_size": batch_size,
+        "sleep_between_batches": sleep_seconds,
+    }
+    client = BatchTrackingChromaClient()
+    return AdvancedRAGRetriever(engine=engine, chroma_client=client), client
+
+
+def test_ingest_flushes_in_multiple_batches_when_batch_size_exceeded(monkeypatch, tmp_path):
+    """When batch_size is smaller than total chunks, upsert_documents is called multiple times."""
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    # Write enough content to produce several chunks (max_chars=40 in FakeEngine)
+    (att_dir / "a.md").write_text(
+        "# Intro\n" + "word " * 30 + "\n## Body\n" + "word " * 30,
+        encoding="utf-8",
+    )
+
+    # batch_size=1 forces a flush after every chunk
+    retriever, client = _make_retriever_with_batch_cfg(md_root, monkeypatch, batch_size=1)
+    stats = retriever.ingest_data()
+
+    total_chunks = stats["added_chunks"] + stats["updated_chunks"]
+    assert total_chunks > 0, "Expected at least one chunk to be indexed"
+    assert len(client.upsert_calls) > 1, (
+        f"Expected multiple upsert calls with batch_size=1, got {len(client.upsert_calls)}"
+    )
+    # All chunks must still be present in total
+    assert len(client.all_ids) == total_chunks
+
+
+def test_ingest_sleeps_between_batches(monkeypatch, tmp_path):
+    """When sleep_between_batches > 0, time.sleep is called between batch flushes."""
+    import time
+    from zotero_mcp.retrievers import advanced_rag
+
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    (att_dir / "a.md").write_text(
+        "# Intro\n" + "word " * 30 + "\n## Body\n" + "word " * 30,
+        encoding="utf-8",
+    )
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("zotero_mcp.retrievers.advanced_rag.time.sleep", lambda s: sleep_calls.append(s))
+
+    retriever, client = _make_retriever_with_batch_cfg(
+        md_root, monkeypatch, batch_size=1, sleep_seconds=0.5
+    )
+    retriever.ingest_data()
+
+    assert len(sleep_calls) > 0, "Expected time.sleep to be called between batches"
+    assert all(s == 0.5 for s in sleep_calls), (
+        f"Expected all sleep calls to use configured 0.5s, got: {sleep_calls}"
+    )

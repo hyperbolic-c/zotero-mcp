@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -216,6 +217,21 @@ class AdvancedRAGRetriever(BaseRetriever):
             return {}
         return item_to_attachments
 
+    def _flush_batch(
+        self,
+        batch_docs: list[str],
+        batch_metas: list[dict[str, Any]],
+        batch_ids: list[str],
+        stats: dict[str, Any],
+    ) -> None:
+        existing_ids = self.chroma_client.get_existing_ids(batch_ids)
+        self.chroma_client.upsert_documents(batch_docs, batch_metas, batch_ids)
+        for doc_id in batch_ids:
+            if doc_id in existing_ids:
+                stats["updated_chunks"] += 1
+            else:
+                stats["added_chunks"] += 1
+
     def ingest_data(
         self,
         force_rebuild: bool = False,
@@ -257,6 +273,8 @@ class AdvancedRAGRetriever(BaseRetriever):
         batch_docs: list[str] = []
         batch_metas: list[dict[str, Any]] = []
         batch_ids: list[str] = []
+        batch_size = int(self.ingest_cfg.get("batch_size", 500))
+        sleep_seconds = float(self.ingest_cfg.get("sleep_between_batches", 1.0))
         next_milestone = 10 if stats["total_items"] >= 10 else stats["total_items"]
         seen_items = 0
 
@@ -276,6 +294,14 @@ class AdvancedRAGRetriever(BaseRetriever):
                 batch_metas.extend(metas)
                 batch_ids.extend(ids)
                 stats["processed_items"] += 1
+
+                if len(batch_ids) >= batch_size:
+                    self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
+                    batch_docs.clear()
+                    batch_metas.clear()
+                    batch_ids.clear()
+                    if sleep_seconds > 0:
+                        time.sleep(sleep_seconds)
             except Exception as exc:
                 stats["errors"] += 1
                 logger.warning("Error processing item %s: %s", item.get("key", "?"), exc, exc_info=True)
@@ -297,13 +323,7 @@ class AdvancedRAGRetriever(BaseRetriever):
                     pass
 
         if batch_ids:
-            existing_ids = self.chroma_client.get_existing_ids(batch_ids)
-            self.chroma_client.upsert_documents(batch_docs, batch_metas, batch_ids)
-            for doc_id in batch_ids:
-                if doc_id in existing_ids:
-                    stats["updated_chunks"] += 1
-                else:
-                    stats["added_chunks"] += 1
+            self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
 
         end_time = datetime.now()
         stats["duration"] = str(end_time - start_time)

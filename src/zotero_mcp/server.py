@@ -2766,6 +2766,9 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
         output.append(f"**Embedding Model:** {collection_info.get('embedding_model', 'Unknown')}")
         output.append(f"**Database Path:** {collection_info.get('persist_directory', 'Unknown')}")
+        output.append(f"**Retriever Mode:** {status.get('retriever_mode', 'legacy_metadata')}")
+        if status.get("reranker_status"):
+            output.append(f"**Reranker:** {status.get('reranker_status')}")
 
         if collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")

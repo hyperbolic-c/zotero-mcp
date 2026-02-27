@@ -336,6 +336,9 @@ def main():
                 print(f"  Document count: {collection_info.get('count', 0)}")
                 print(f"  Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
                 print(f"  Database path: {collection_info.get('persist_directory', 'Unknown')}")
+                print(f"  Retriever mode: {status.get('retriever_mode', 'legacy_metadata')}")
+                if status.get("reranker_status"):
+                    print(f"  Reranker: {status.get('reranker_status')}")
 
                 update_config = status.get("update_config", {})
                 print(f"  Auto update: {update_config.get('auto_update', False)}")
@@ -438,6 +441,9 @@ def main():
             print(f"Document count: {collection_info.get('count', 0)}")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
+            print(f"Retriever mode: {status.get('retriever_mode', 'legacy_metadata')}")
+            if status.get("reranker_status"):
+                print(f"Reranker: {status.get('reranker_status')}")
 
             update_config = status.get("update_config", {})
             print(f"\nUpdate configuration:")

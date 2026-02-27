@@ -12,15 +12,14 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Any
 import logging
-
-from pyzotero import zotero
 
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .utils import format_creators, is_local_mode
-from .local_db import LocalZoteroReader, get_local_zotero_reader
+from .local_db import LocalZoteroReader
+from .retrievers.factory import create_retriever
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +51,61 @@ class ZoteroSemanticSearch:
             config_path: Path to configuration file
             db_path: Optional path to Zotero database (overrides config file)
         """
-        self.chroma_client = chroma_client or create_chroma_client(config_path)
-        self.zotero_client = get_zotero_client()
         self.config_path = config_path
         self.db_path = db_path  # CLI override for Zotero database path
+        self.zotero_client = get_zotero_client()
+        self.semantic_config = self._load_semantic_config()
+        self.retriever_mode = self.semantic_config.get("retriever_mode", "legacy_metadata")
+        self.chroma_client = chroma_client
+        if self.chroma_client is None and self.retriever_mode in {"legacy_metadata", "legacy_fulltext"}:
+            self.chroma_client = create_chroma_client(config_path)
 
         # Load update configuration
         self.update_config = self._load_update_config()
+        self.retriever = create_retriever(self.retriever_mode, self)
+        if self.chroma_client is None:
+            self.chroma_client = getattr(self.retriever, "chroma_client", None)
+
+    def _load_semantic_config(self) -> dict[str, Any]:
+        """Load semantic search configuration with backward-compatible defaults."""
+        config: dict[str, Any] = {
+            "retriever_mode": "legacy_metadata",
+            "advanced_rag": {
+                "md_root": "/Users/liam/projects/pyzotero/zotero_md_output",
+                "chunk": {
+                    "max_chars": 1600,
+                    "overlap_chars": 200,
+                    "heading_first": True,
+                    "min_chunk_chars": 120,
+                },
+                "ingest": {"strip_images": True},
+                "reranker": {
+                    "enabled": True,
+                    "backend": "flashrank",
+                    "model_name": "ms-marco-MiniLM-L-12-v2",
+                    "local_model_path": None,
+                    "top_n": 8,
+                },
+                "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.85},
+            },
+        }
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f).get("semantic_search", {})
+                    config.update(file_config)
+                    if "advanced_rag" in file_config:
+                        advanced_cfg = config["advanced_rag"]
+                        file_advanced = file_config.get("advanced_rag", {})
+                        for key in ("chunk", "ingest", "reranker", "retrieve"):
+                            if key in file_advanced and isinstance(file_advanced[key], dict):
+                                advanced_cfg[key].update(file_advanced[key])
+                        for key in ("md_root",):
+                            if key in file_advanced:
+                                advanced_cfg[key] = file_advanced[key]
+            except Exception as e:
+                logger.warning(f"Error loading semantic config: {e}")
+        return config
 
     def _load_update_config(self) -> dict[str, Any]:
         """Load update configuration from file or use defaults."""
@@ -546,10 +593,28 @@ class ZoteroSemanticSearch:
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
 
-    def update_database(self,
-                       force_full_rebuild: bool = False,
-                       limit: int | None = None,
-                       extract_fulltext: bool = False) -> dict[str, Any]:
+    def update_database(
+        self,
+        force_full_rebuild: bool = False,
+        limit: int | None = None,
+        extract_fulltext: bool = False,
+    ) -> dict[str, Any]:
+        """Update semantic database using the configured retriever strategy."""
+        stats = self.retriever.ingest_data(
+            force_rebuild=force_full_rebuild,
+            limit=limit,
+            extract_fulltext=extract_fulltext,
+        )
+        self.update_config["last_update"] = datetime.now().isoformat()
+        self._save_update_config()
+        if "retriever_mode" not in stats:
+            stats["retriever_mode"] = self.retriever_mode
+        return stats
+
+    def _legacy_update_database(self,
+                                force_full_rebuild: bool = False,
+                                limit: int | None = None,
+                                extract_fulltext: bool = False) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
 
@@ -698,10 +763,19 @@ class ZoteroSemanticSearch:
 
         return stats
 
-    def search(self,
-               query: str,
-               limit: int = 10,
-               filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Search using the configured retriever strategy."""
+        return self.retriever.search(query=query, limit=limit, filters=filters)
+
+    def _legacy_search(self,
+                       query: str,
+                       limit: int = 10,
+                       filters: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -786,6 +860,15 @@ class ZoteroSemanticSearch:
         return enriched
 
     def get_database_status(self) -> dict[str, Any]:
+        """Get status using the configured retriever strategy."""
+        status = self.retriever.get_database_status()
+        status["update_config"] = self.update_config
+        status["should_update"] = self.should_update_database()
+        status["last_update"] = self.update_config.get("last_update")
+        status["retriever_mode"] = status.get("retriever_mode", self.retriever_mode)
+        return status
+
+    def _legacy_get_database_status(self) -> dict[str, Any]:
         """Get status information about the semantic search database."""
         collection_info = self.chroma_client.get_collection_info()
 
@@ -794,6 +877,7 @@ class ZoteroSemanticSearch:
             "update_config": self.update_config,
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
+            "retriever_mode": self.retriever_mode,
         }
 
     def delete_item(self, item_key: str) -> bool:

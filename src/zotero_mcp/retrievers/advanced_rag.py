@@ -286,11 +286,12 @@ class AdvancedRAGRetriever(BaseRetriever):
         if not candidates or self._ranker is None:
             return candidates
 
+        top_n = int(self.reranker_cfg.get("top_n", 8))
         try:
             from flashrank import RerankRequest
 
             passages = [{"id": str(i), "text": c.text} for i, c in enumerate(candidates)]
-            results = self._ranker.rank(RerankRequest(query=query, passages=passages))
+            results = self._ranker.rank(RerankRequest(query=query, passages=passages), top_n=top_n)
             reranked: list[CandidateChunk] = []
             for result in results:
                 idx = int(result.get("id", -1))

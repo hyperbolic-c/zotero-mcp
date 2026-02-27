@@ -130,6 +130,19 @@ def find_claude_config():
 def setup_semantic_search(existing_semantic_config: dict = None, semantic_config_only_arg: bool = False) -> dict:
     """Interactive setup for semantic search configuration."""
     print("\n=== Semantic Search Configuration ===")
+    existing_semantic_config = existing_semantic_config or {}
+
+    def _ask_yes_no(prompt: str, default: bool = True) -> bool:
+        suffix = "Y/n" if default else "y/N"
+        while True:
+            raw = input(f"{prompt} [{suffix}]: ").strip().lower()
+            if not raw:
+                return default
+            if raw in {"y", "yes"}:
+                return True
+            if raw in {"n", "no"}:
+                return False
+            print("Please enter y or n")
 
     if existing_semantic_config:
         # Display config without sensitive info
@@ -137,9 +150,11 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
+        retriever_mode = existing_semantic_config.get("retriever_mode", "legacy_metadata")
         print("Found existing semantic search configuration:")
         print(f"  - Embedding model: {model}")
         print(f"  - Embedding model name: {name}")
+        print(f"  - Retriever mode: {retriever_mode}")
         print(f"  - Update frequency: {update_freq}")
         print(f"  - Zotero database path: {db_path}")
         print("You can keep it or change it.")
@@ -222,6 +237,94 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         else:
             print("Using default Gemini base URL")
 
+    # Configure retriever mode
+    print("\n=== Retrieval Mode ===")
+    print("Choose how semantic indexing and retrieval should work:")
+    print("1. legacy_metadata - metadata-only semantic indexing")
+    print("2. legacy_fulltext - legacy mode with optional --fulltext extraction")
+    print("3. advanced_rag - chunked retrieval using MinerU markdown (md_root)")
+    existing_mode = existing_semantic_config.get("retriever_mode", "legacy_metadata")
+    mode_map = {"1": "legacy_metadata", "2": "legacy_fulltext", "3": "advanced_rag"}
+    mode_default_choice = {
+        "legacy_metadata": "1",
+        "legacy_fulltext": "2",
+        "advanced_rag": "3",
+    }.get(existing_mode, "1")
+    while True:
+        mode_choice = input(f"Choose retriever mode [default {mode_default_choice}]: ").strip()
+        if mode_choice == "":
+            mode_choice = mode_default_choice
+        if mode_choice in mode_map:
+            break
+        print("Please enter 1, 2, or 3")
+
+    retriever_mode = mode_map[mode_choice]
+    config["retriever_mode"] = retriever_mode
+
+    if retriever_mode == "advanced_rag":
+        print("\n=== Advanced RAG Settings ===")
+        existing_advanced = existing_semantic_config.get("advanced_rag", {})
+        default_md_root = existing_advanced.get(
+            "md_root",
+            str(Path.home() / ".config" / "zotero-mcp" / "md_root")
+        )
+        md_root_input = input(f"MinerU markdown root [{default_md_root}]: ").strip()
+        md_root = md_root_input or default_md_root
+        if not Path(md_root).exists():
+            print(f"Warning: md_root does not exist yet: {md_root}")
+            print("advanced_rag will fall back to metadata chunks for missing markdown files.")
+
+        existing_reranker = existing_advanced.get("reranker", {})
+        reranker_enabled = _ask_yes_no(
+            "Enable reranker (flashrank)",
+            default=existing_reranker.get("enabled", True),
+        )
+        reranker_model_default = existing_reranker.get("model_name", "ms-marco-MiniLM-L-12-v2")
+        reranker_model = input(f"Reranker model [{reranker_model_default}]: ").strip() or reranker_model_default
+        reranker_top_n_default = existing_reranker.get("top_n", 8)
+        while True:
+            raw_top_n = input(f"Reranker top_n [{reranker_top_n_default}]: ").strip()
+            if raw_top_n == "":
+                reranker_top_n = int(reranker_top_n_default)
+                break
+            try:
+                reranker_top_n = int(raw_top_n)
+                if reranker_top_n > 0:
+                    break
+                print("Please enter a positive integer")
+            except ValueError:
+                print("Please enter a valid number")
+
+        reranker_cache_default = existing_reranker.get("local_model_path", "")
+        reranker_cache = input(
+            f"Reranker cache dir [{reranker_cache_default or 'system default'}]: "
+        ).strip()
+
+        config["advanced_rag"] = {
+            "md_root": md_root,
+            "chunk": {
+                "max_chars": existing_advanced.get("chunk", {}).get("max_chars", 1600),
+                "overlap_chars": existing_advanced.get("chunk", {}).get("overlap_chars", 200),
+                "heading_first": existing_advanced.get("chunk", {}).get("heading_first", True),
+                "min_chunk_chars": existing_advanced.get("chunk", {}).get("min_chunk_chars", 120),
+            },
+            "ingest": {
+                "strip_images": existing_advanced.get("ingest", {}).get("strip_images", True),
+            },
+            "reranker": {
+                "enabled": reranker_enabled,
+                "backend": "flashrank",
+                "model_name": reranker_model,
+                "local_model_path": reranker_cache or None,
+                "top_n": reranker_top_n,
+            },
+            "retrieve": {
+                "candidate_k": existing_advanced.get("retrieve", {}).get("candidate_k", 30),
+                "evidence_per_item": existing_advanced.get("retrieve", {}).get("evidence_per_item", 2),
+                "meta_weight": existing_advanced.get("retrieve", {}).get("meta_weight", 0.85),
+            },
+        }
+
     # Configure update frequency
     print("\n=== Database Update Configuration ===")
     print("Configure how often the semantic search database is updated:")
@@ -274,22 +377,24 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         print(f"Database will be updated every {days} days.")
 
     # Configure extraction settings
-    print("\n=== Content Extraction Settings ===")
-    print("Set a page cap for PDF extraction to balance speed vs. coverage.")
-    print("Press Enter to use the default.")
-    default_pdf_max = existing_semantic_config.get("extraction", {}).get("pdf_max_pages", 10) if existing_semantic_config else 10
-    while True:
-        raw = input(f"PDF max pages [{default_pdf_max}]: ").strip()
-        if raw == "":
-            pdf_max_pages = default_pdf_max
-            break
-        try:
-            pdf_max_pages = int(raw)
-            if pdf_max_pages > 0:
+    if retriever_mode in {"legacy_metadata", "legacy_fulltext"}:
+        print("\n=== Content Extraction Settings ===")
+        print("Set a page cap for PDF extraction to balance speed vs. coverage.")
+        print("Press Enter to use the default.")
+        default_pdf_max = existing_semantic_config.get("extraction", {}).get("pdf_max_pages", 10) if existing_semantic_config else 10
+        while True:
+            raw = input(f"PDF max pages [{default_pdf_max}]: ").strip()
+            if raw == "":
+                pdf_max_pages = default_pdf_max
                 break
-            print("Please enter a positive integer")
-        except ValueError:
-            print("Please enter a valid number")
+            try:
+                pdf_max_pages = int(raw)
+                if pdf_max_pages > 0:
+                    break
+                print("Please enter a positive integer")
+            except ValueError:
+                print("Please enter a valid number")
+        config["extraction"] = {"pdf_max_pages": pdf_max_pages}
 
     # Configure Zotero database path
     print("\n=== Zotero Database Path ===")
@@ -316,7 +421,6 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         print("Using auto-detect for Zotero database location.")
 
     config["update_config"] = update_config
-    config["extraction"] = {"pdf_max_pages": pdf_max_pages}
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
 
@@ -632,14 +736,24 @@ def main(cli_args=None):
                 print("1. Restart Claude Desktop if it's running")
                 print("2. In Claude, type: /tools zotero")
                 if semantic_config_changed:
+                    mode = semantic_config.get("retriever_mode", "legacy_metadata")
                     print("\nSemantic Search:")
                     print("- Configured with", semantic_config.get("embedding_model", "default"), "embedding model")
+                    print("- Retriever mode:", mode)
                     print("- To change the configuration, run: zotero-mcp setup --semantic-config-only")
                     print("- The config file is located at: ~/.config/zotero-mcp/config.json")
                     print("- You may need to rebuild your database: zotero-mcp update-db --force-rebuild")
+                    if mode == "legacy_fulltext":
+                        print("- For legacy full-text extraction, run: zotero-mcp update-db --fulltext")
+                    elif mode == "advanced_rag":
+                        print("- advanced_rag uses md_root markdown files; missing markdown falls back to metadata chunks")
                 else:
+                    mode = semantic_config.get("retriever_mode", "legacy_metadata") if semantic_config else "legacy_metadata"
                     print("\nSemantic Search:")
                     print("- To update the database, run: zotero-mcp update-db")
+                    print("- Current retriever mode:", mode)
+                    if mode == "legacy_fulltext":
+                        print("- For legacy full-text extraction, run: zotero-mcp update-db --fulltext")
                     print("- Use zotero_semantic_search tool in Claude for AI-powered search")
                 if use_local:
                     print("\nNote: Make sure Zotero desktop is running and the local API is enabled in preferences.")

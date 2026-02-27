@@ -221,8 +221,8 @@ class AdvancedRAGRetriever(BaseRetriever):
         stats = {
             "total_items": 0,
             "processed_items": 0,
-            "added_items": 0,
-            "updated_items": 0,
+            "added_chunks": 0,
+            "updated_chunks": 0,
             "skipped_items": 0,
             "errors": 0,
             "retriever_mode": "advanced_rag",
@@ -272,9 +272,9 @@ class AdvancedRAGRetriever(BaseRetriever):
             self.chroma_client.upsert_documents(batch_docs, batch_metas, batch_ids)
             for doc_id in batch_ids:
                 if doc_id in existing_ids:
-                    stats["updated_items"] += 1
+                    stats["updated_chunks"] += 1
                 else:
-                    stats["added_items"] += 1
+                    stats["added_chunks"] += 1
 
         return stats
 

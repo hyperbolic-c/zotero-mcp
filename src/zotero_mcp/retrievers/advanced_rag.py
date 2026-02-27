@@ -54,9 +54,12 @@ class AdvancedRAGRetriever(BaseRetriever):
                 kwargs["cache_dir"] = local_model_path
             self._ranker = Ranker(**kwargs)
             return f"enabled:flashrank/{model_name}"
-        except Exception:
+        except ImportError:
             self._ranker = None
             return "degraded:package_missing"
+        except Exception as exc:
+            self._ranker = None
+            return f"degraded:init_error:{type(exc).__name__}"
 
     def _build_meta_text(self, item: dict[str, Any]) -> str:
         data = item.get("data", {})
@@ -264,8 +267,9 @@ class AdvancedRAGRetriever(BaseRetriever):
                 batch_metas.extend(metas)
                 batch_ids.extend(ids)
                 stats["processed_items"] += 1
-            except Exception:
+            except Exception as exc:
                 stats["errors"] += 1
+                logger.warning("Error processing item %s: %s", item.get("key", "?"), exc, exc_info=True)
 
         if batch_ids:
             existing_ids = self.chroma_client.get_existing_ids(batch_ids)

@@ -408,3 +408,125 @@ def test_ingest_sleeps_between_batches(monkeypatch, tmp_path):
     assert all(s == 0.5 for s in sleep_calls), (
         f"Expected all sleep calls to use configured 0.5s, got: {sleep_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# chunker backend / strategy metadata in ingested chunks
+# ---------------------------------------------------------------------------
+
+
+def _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg: dict):
+    """Helper: build AdvancedRAGRetriever with a custom chunk config."""
+    from zotero_mcp.retrievers import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
+
+    engine = FakeEngine(md_root)
+    engine.semantic_config["advanced_rag"]["chunk"] = chunk_cfg
+    client = FakeChromaClient()
+    return AdvancedRAGRetriever(engine=engine, chroma_client=client), client
+
+
+def test_langchain_backend_metadata_written_to_chunks(monkeypatch, tmp_path):
+    """Content chunks ingested with langchain backend must carry chunker_backend metadata."""
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    (att_dir / "a.md").write_text(
+        "# Introduction\n\nThis is a sufficiently long introduction section. " * 5,
+        encoding="utf-8",
+    )
+
+    chunk_cfg = {
+        "backend": "langchain",
+        "strategy": "markdown_recursive_v1",
+        "chunk_size": 500,
+        "chunk_overlap": 50,
+        "min_chunk_chars": 30,
+    }
+    retriever, client = _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg)
+    retriever.ingest_data()
+
+    content_metas = [m for m in client.metas if m.get("chunk_kind") == "content"]
+    assert content_metas, "Expected at least one content chunk"
+    for meta in content_metas:
+        assert meta.get("chunker_backend") == "langchain", (
+            f"Expected chunker_backend='langchain', got: {meta.get('chunker_backend')!r}"
+        )
+        assert meta.get("chunker_strategy") == "markdown_recursive_v1", (
+            f"Expected chunker_strategy='markdown_recursive_v1', got: {meta.get('chunker_strategy')!r}"
+        )
+
+
+def test_legacy_backend_metadata_written_to_chunks(monkeypatch, tmp_path):
+    """Content chunks ingested with legacy backend must carry chunker_backend='legacy'."""
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    (att_dir / "a.md").write_text(
+        "# Section\n\nLegacy chunking text that is long enough. " * 5,
+        encoding="utf-8",
+    )
+
+    chunk_cfg = {
+        "backend": "legacy",
+        "max_chars": 200,
+        "overlap_chars": 20,
+        "min_chunk_chars": 20,
+    }
+    retriever, client = _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg)
+    retriever.ingest_data()
+
+    content_metas = [m for m in client.metas if m.get("chunk_kind") == "content"]
+    assert content_metas, "Expected at least one content chunk"
+    for meta in content_metas:
+        assert meta.get("chunker_backend") == "legacy", (
+            f"Expected chunker_backend='legacy', got: {meta.get('chunker_backend')!r}"
+        )
+
+
+def test_old_max_chars_config_still_produces_chunks(monkeypatch, tmp_path):
+    """Backward-compat: old max_chars/overlap_chars config must not break ingestion."""
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    (att_dir / "a.md").write_text(
+        "# Old Config\n\nSome text that should be indexed even with legacy config keys. " * 5,
+        encoding="utf-8",
+    )
+
+    # Simulate an old-style config with no backend key and old field names
+    chunk_cfg = {
+        "max_chars": 300,
+        "overlap_chars": 30,
+        "min_chunk_chars": 20,
+    }
+    retriever, client = _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg)
+    retriever.ingest_data()
+
+    # Should produce chunks without crashing
+    assert any(doc_id.startswith("I1:ATT1:") for doc_id in client.ids), (
+        "Expected content chunks for I1 with legacy config"
+    )
+
+
+def test_meta_weight_default_is_0_70():
+    """The in-code default meta_weight for advanced_rag must be 0.70."""
+    from zotero_mcp import semantic_search as ss
+    defaults = ss.ZoteroSemanticSearch._get_advanced_rag_defaults()
+    assert defaults["retrieve"]["meta_weight"] == 0.70, (
+        f"Expected meta_weight default=0.70, got: {defaults['retrieve']['meta_weight']!r}"
+    )
+
+
+def test_defaults_include_langchain_backend():
+    """The in-code defaults must specify backend='langchain' for the chunk section."""
+    from zotero_mcp import semantic_search as ss
+    defaults = ss.ZoteroSemanticSearch._get_advanced_rag_defaults()
+    assert defaults["chunk"]["backend"] == "langchain", (
+        f"Expected chunk.backend='langchain' in defaults, got: {defaults['chunk']['backend']!r}"
+    )
+    assert defaults["chunk"]["strategy"] == "markdown_recursive_v1", (
+        f"Expected chunk.strategy='markdown_recursive_v1', got: {defaults['chunk']['strategy']!r}"
+    )

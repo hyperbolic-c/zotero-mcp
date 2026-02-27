@@ -4,7 +4,9 @@ import glob
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +223,7 @@ class AdvancedRAGRetriever(BaseRetriever):
         extract_fulltext: bool = False,
     ) -> dict[str, Any]:
         del extract_fulltext
+        start_time = datetime.now()
         stats = {
             "total_items": 0,
             "processed_items": 0,
@@ -246,10 +249,16 @@ class AdvancedRAGRetriever(BaseRetriever):
         items = self.engine._get_items_from_source(limit=limit, extract_fulltext=False)
         stats["total_items"] = len(items)
         attachment_map = self._collect_attachment_map(limit=limit)
+        try:
+            sys.stderr.write(f"Total items to index: {stats['total_items']}\n")
+        except Exception:
+            pass
 
         batch_docs: list[str] = []
         batch_metas: list[dict[str, Any]] = []
         batch_ids: list[str] = []
+        next_milestone = 10 if stats["total_items"] >= 10 else stats["total_items"]
+        seen_items = 0
 
         for item in items:
             try:
@@ -270,6 +279,22 @@ class AdvancedRAGRetriever(BaseRetriever):
             except Exception as exc:
                 stats["errors"] += 1
                 logger.warning("Error processing item %s: %s", item.get("key", "?"), exc, exc_info=True)
+            finally:
+                seen_items += 1
+                try:
+                    while seen_items >= next_milestone and next_milestone > 0:
+                        sys.stderr.write(
+                            f"Processed: {next_milestone}/{stats['total_items']} "
+                            f"indexed_items:{stats['processed_items']} "
+                            f"skipped:{stats['skipped_items']} "
+                            f"errors:{stats['errors']}\n"
+                        )
+                        next_milestone += 10
+                        if next_milestone > stats["total_items"]:
+                            next_milestone = stats["total_items"]
+                            break
+                except Exception:
+                    pass
 
         if batch_ids:
             existing_ids = self.chroma_client.get_existing_ids(batch_ids)
@@ -279,6 +304,11 @@ class AdvancedRAGRetriever(BaseRetriever):
                     stats["updated_chunks"] += 1
                 else:
                     stats["added_chunks"] += 1
+
+        end_time = datetime.now()
+        stats["duration"] = str(end_time - start_time)
+        stats["start_time"] = start_time.isoformat()
+        stats["end_time"] = end_time.isoformat()
 
         return stats
 

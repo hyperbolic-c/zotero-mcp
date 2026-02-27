@@ -605,11 +605,20 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
     ) -> dict[str, Any]:
         """Update semantic database using the configured retriever strategy."""
+        start_time = datetime.now()
         stats = self.retriever.ingest_data(
             force_rebuild=force_full_rebuild,
             limit=limit,
             extract_fulltext=extract_fulltext,
         )
+        end_time = datetime.now()
+        stats.setdefault("start_time", start_time.isoformat())
+        stats.setdefault("end_time", end_time.isoformat())
+        stats.setdefault("duration", str(end_time - start_time))
+        if "added_items" not in stats and "added_chunks" in stats:
+            stats["added_items"] = stats.get("added_chunks", 0)
+        if "updated_items" not in stats and "updated_chunks" in stats:
+            stats["updated_items"] = stats.get("updated_chunks", 0)
         self.update_config["last_update"] = datetime.now().isoformat()
         self._save_update_config()
         if "retriever_mode" not in stats:

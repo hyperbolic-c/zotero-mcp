@@ -2707,10 +2707,15 @@ def update_search_database(
         if stats.get("error"):
             output.append(f"**Error:** {stats['error']}")
         else:
+            retriever_mode = stats.get("retriever_mode", "legacy_metadata")
+            added_count = stats.get("added_items", stats.get("added_chunks", 0))
+            updated_count = stats.get("updated_items", stats.get("updated_chunks", 0))
+            added_label = "Added chunks" if retriever_mode == "advanced_rag" else "Added"
+            updated_label = "Updated chunks" if retriever_mode == "advanced_rag" else "Updated"
             output.append(f"**Total items:** {stats.get('total_items', 0)}")
             output.append(f"**Processed:** {stats.get('processed_items', 0)}")
-            output.append(f"**Added:** {stats.get('added_items', 0)}")
-            output.append(f"**Updated:** {stats.get('updated_items', 0)}")
+            output.append(f"**{added_label}:** {added_count}")
+            output.append(f"**{updated_label}:** {updated_count}")
             output.append(f"**Skipped:** {stats.get('skipped_items', 0)}")
             output.append(f"**Errors:** {stats.get('errors', 0)}")
             output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")

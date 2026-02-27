@@ -16,6 +16,7 @@ from zotero_mcp.local_db import LocalZoteroReader
 from zotero_mcp.utils import format_creators, is_local_mode
 
 from .base import BaseRetriever
+from .chunkers import ChunkingBackend, get_chunking_backend
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class AdvancedRAGRetriever(BaseRetriever):
         self.reranker_cfg = self.config.get("reranker", {})
         self._ranker = None
         self._reranker_status = self._init_reranker()
+        self._chunking_backend: ChunkingBackend = get_chunking_backend(self.chunk_cfg)
 
     def _init_reranker(self) -> str:
         if not self.reranker_cfg.get("enabled", True):
@@ -163,23 +165,22 @@ class AdvancedRAGRetriever(BaseRetriever):
             if not merged_text:
                 continue
 
-            chunk_idx = 0
-            for section_title, section_text in self._split_sections(merged_text):
-                for chunk in self._chunk_text(section_text):
-                    docs.append(chunk)
-                    chunk_meta = dict(base_meta)
-                    chunk_meta.update(
-                        {
-                            "attachment_key": attachment_key,
-                            "chunk_kind": "content",
-                            "section_title": section_title,
-                            "source_type": "mineru_md",
-                            "has_md_source": True,
-                        }
-                    )
-                    metas.append(chunk_meta)
-                    ids.append(f"{item_key}:{attachment_key}:{chunk_idx}")
-                    chunk_idx += 1
+            chunk_records = self._chunking_backend.chunk(merged_text)
+            for record in chunk_records:
+                docs.append(record.text)
+                chunk_meta = dict(base_meta)
+                chunk_meta.update(
+                    {
+                        "attachment_key": attachment_key,
+                        "chunk_kind": "content",
+                        "section_title": record.section_title,
+                        "source_type": "mineru_md",
+                        "has_md_source": True,
+                    }
+                )
+                chunk_meta.update(record.extra_metadata)
+                metas.append(chunk_meta)
+                ids.append(f"{item_key}:{attachment_key}:{record.chunk_index}")
 
         meta_text = self._build_meta_text(item)
         if meta_text:
@@ -405,7 +406,7 @@ class AdvancedRAGRetriever(BaseRetriever):
     ) -> dict[str, Any]:
         candidate_k = int(self.retrieve_cfg.get("candidate_k", 30))
         evidence_per_item = int(self.retrieve_cfg.get("evidence_per_item", 2))
-        meta_weight = float(self.retrieve_cfg.get("meta_weight", 0.85))
+        meta_weight = float(self.retrieve_cfg.get("meta_weight", 0.70))
 
         raw_results = self.chroma_client.search(
             query_texts=[query],
@@ -520,7 +521,9 @@ class AdvancedRAGRetriever(BaseRetriever):
         summary = {
             "md_root": self.config.get("md_root", ""),
             "candidate_k": self.retrieve_cfg.get("candidate_k", 30),
-            "meta_weight": self.retrieve_cfg.get("meta_weight", 0.85),
+            "meta_weight": self.retrieve_cfg.get("meta_weight", 0.70),
+            "chunker_backend": self.chunk_cfg.get("backend", "langchain"),
+            "chunker_strategy": self.chunk_cfg.get("strategy", "markdown_recursive_v1"),
         }
         return {
             "collection_info": self.chroma_client.get_collection_info(),

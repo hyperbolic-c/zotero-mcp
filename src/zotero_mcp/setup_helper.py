@@ -274,6 +274,66 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
             print(f"Warning: md_root does not exist yet: {md_root}")
             print("advanced_rag will fall back to metadata chunks for missing markdown files.")
 
+        # --- Chunking backend ---
+        existing_chunk = existing_advanced.get("chunk", {})
+        print("\nChunking backend:")
+        print("1. langchain (markdown_recursive_v1) - recommended for English papers")
+        print("2. legacy - original character sliding-window")
+        backend_default = existing_chunk.get("backend", "langchain")
+        backend_default_choice = "1" if backend_default == "langchain" else "2"
+        while True:
+            backend_choice = input(f"Choose backend [default {backend_default_choice}]: ").strip() or backend_default_choice
+            if backend_choice in ("1", "2"):
+                break
+            print("Please enter 1 or 2")
+        chunk_backend = "langchain" if backend_choice == "1" else "legacy"
+
+        if chunk_backend == "langchain":
+            chunk_size_default = existing_chunk.get("chunk_size", 1100)
+            while True:
+                raw = input(f"chunk_size [{chunk_size_default}]: ").strip()
+                if raw == "":
+                    chunk_size = int(chunk_size_default)
+                    break
+                try:
+                    chunk_size = int(raw)
+                    if chunk_size > 0:
+                        break
+                    print("Please enter a positive integer")
+                except ValueError:
+                    print("Please enter a valid number")
+
+            chunk_overlap_default = existing_chunk.get("chunk_overlap", 180)
+            while True:
+                raw = input(f"chunk_overlap [{chunk_overlap_default}]: ").strip()
+                if raw == "":
+                    chunk_overlap = int(chunk_overlap_default)
+                    break
+                try:
+                    chunk_overlap = int(raw)
+                    if chunk_overlap >= 0:
+                        break
+                    print("Please enter a non-negative integer")
+                except ValueError:
+                    print("Please enter a valid number")
+
+            chunk_cfg = {
+                "backend": "langchain",
+                "strategy": existing_chunk.get("strategy", "markdown_recursive_v1"),
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "min_chunk_chars": existing_chunk.get("min_chunk_chars", 220),
+            }
+        else:
+            # legacy: keep old max_chars/overlap_chars fields
+            chunk_cfg = {
+                "backend": "legacy",
+                "max_chars": existing_chunk.get("max_chars", 1600),
+                "overlap_chars": existing_chunk.get("overlap_chars", 200),
+                "min_chunk_chars": existing_chunk.get("min_chunk_chars", 120),
+                "heading_first": existing_chunk.get("heading_first", True),
+            }
+
         existing_reranker = existing_advanced.get("reranker", {})
         reranker_enabled = _ask_yes_no(
             "Enable reranker (flashrank)",
@@ -302,12 +362,7 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
 
         config["advanced_rag"] = {
             "md_root": md_root,
-            "chunk": {
-                "max_chars": existing_advanced.get("chunk", {}).get("max_chars", 1600),
-                "overlap_chars": existing_advanced.get("chunk", {}).get("overlap_chars", 200),
-                "heading_first": existing_advanced.get("chunk", {}).get("heading_first", True),
-                "min_chunk_chars": existing_advanced.get("chunk", {}).get("min_chunk_chars", 120),
-            },
+            "chunk": chunk_cfg,
             "ingest": {
                 "strip_images": existing_advanced.get("ingest", {}).get("strip_images", True),
             },
@@ -321,7 +376,7 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
             "retrieve": {
                 "candidate_k": existing_advanced.get("retrieve", {}).get("candidate_k", 30),
                 "evidence_per_item": existing_advanced.get("retrieve", {}).get("evidence_per_item", 2),
-                "meta_weight": existing_advanced.get("retrieve", {}).get("meta_weight", 0.85),
+                "meta_weight": existing_advanced.get("retrieve", {}).get("meta_weight", 0.70),
             },
         }
 

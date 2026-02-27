@@ -72,10 +72,18 @@ class ZoteroSemanticSearch:
         return {
             "md_root": "",
             "chunk": {
+                # --- new LangChain-backed fields (M1) ---
+                "backend": "langchain",
+                "strategy": "markdown_recursive_v1",
+                "chunk_size": 1100,
+                "chunk_overlap": 180,
+                "min_chunk_chars": 220,
+                "separators": ["\n\n", "\n", ". ", "; ", ", ", " "],
+                "headers": ["#", "##", "###", "####"],
+                # --- legacy fields kept for backward compat ---
                 "max_chars": 1600,
                 "overlap_chars": 200,
                 "heading_first": True,
-                "min_chunk_chars": 120,
             },
             "ingest": {"strip_images": True},
             "reranker": {
@@ -85,7 +93,7 @@ class ZoteroSemanticSearch:
                 "local_model_path": None,
                 "top_n": 8,
             },
-            "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.85},
+            "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.70},
         }
 
     def _load_semantic_config(self) -> dict[str, Any]:
@@ -110,6 +118,22 @@ class ZoteroSemanticSearch:
                                 advanced_cfg[key] = file_advanced[key]
             except Exception as e:
                 logger.warning(f"Error loading semantic config: {e}")
+
+        # Backward-compat: map old max_chars/overlap_chars → chunk_size/chunk_overlap
+        chunk_cfg: dict[str, Any] = config.get("advanced_rag", {}).get("chunk", {})
+        migrated = False
+        if "max_chars" in chunk_cfg and "chunk_size" not in chunk_cfg:
+            chunk_cfg["chunk_size"] = chunk_cfg["max_chars"]
+            migrated = True
+        if "overlap_chars" in chunk_cfg and "chunk_overlap" not in chunk_cfg:
+            chunk_cfg["chunk_overlap"] = chunk_cfg["overlap_chars"]
+            migrated = True
+        if migrated:
+            logger.info(
+                "advanced_rag chunk config: migrated legacy fields "
+                "(max_chars→chunk_size, overlap_chars→chunk_overlap)"
+            )
+
         return config
 
     def _load_update_config(self) -> dict[str, Any]:

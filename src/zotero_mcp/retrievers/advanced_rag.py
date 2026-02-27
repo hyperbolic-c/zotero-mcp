@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from zotero_mcp.local_db import LocalZoteroReader
 from zotero_mcp.utils import format_creators, is_local_mode
 
 from .base import BaseRetriever
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -224,6 +227,15 @@ class AdvancedRAGRetriever(BaseRetriever):
             "errors": 0,
             "retriever_mode": "advanced_rag",
         }
+
+        md_root = self.config.get("md_root", "")
+        if not md_root:
+            logger.warning(
+                "advanced_rag md_root is not configured. All items will be indexed as "
+                "metadata-only chunks (no full-text content). "
+                "Set 'semantic_search.advanced_rag.md_root' in your config file "
+                "(e.g. ~/.config/zotero-mcp/config.json)."
+            )
 
         if force_rebuild:
             self.chroma_client.reset_collection()

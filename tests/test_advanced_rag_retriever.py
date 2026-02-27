@@ -290,7 +290,7 @@ def test_delete_item_advanced_rag_raises_not_implemented(monkeypatch):
     monkeypatch.setattr(ss, "get_zotero_client", lambda: object())
     monkeypatch.setattr(ss, "create_retriever", lambda mode, engine: StubRetriever())
 
-    search = ss.ZoteroSemanticSearch(chroma_client=None)
+    search = ss.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
     search.retriever_mode = "advanced_rag"
 
     with pytest.raises(NotImplementedError):

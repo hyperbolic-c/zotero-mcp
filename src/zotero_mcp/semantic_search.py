@@ -887,6 +887,11 @@ class ZoteroSemanticSearch:
 
     def delete_item(self, item_key: str) -> bool:
         """Delete an item from the semantic search database."""
+        if self.retriever_mode == "advanced_rag":
+            raise NotImplementedError(
+                "delete_item is not supported in advanced_rag mode: chunk IDs use compound "
+                "format and deletion must be handled at the retriever level."
+            )
         try:
             self.chroma_client.delete_documents([item_key])
             return True

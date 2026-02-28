@@ -21,6 +21,35 @@ from .chunkers import ChunkingBackend, get_chunking_backend
 logger = logging.getLogger(__name__)
 
 
+def _compute_chroma_max_batch() -> int:
+    """Derive the ChromaDB upsert batch limit from the SQLite compile-time constant.
+
+    ChromaDB's SqlEmbeddingsQueue uses VARIABLES_PER_RECORD=6 and reads
+    MAX_VARIABLE_NUMBER from SQLite's compile options (falling back to 999).
+    We mirror that logic so our limit stays in sync with the installed SQLite.
+    """
+    import sqlite3
+
+    _VARIABLES_PER_RECORD = 6  # mirrors chromadb/db/mixins/embeddings_queue.py
+    try:
+        con = sqlite3.connect(":memory:")
+        for row in con.execute("pragma compile_options"):
+            if "MAX_VARIABLE_NUMBER" in row[0]:
+                return int(row[0].split("=")[1]) // _VARIABLES_PER_RECORD
+        # pragma didn't surface it — fall back to runtime limit
+        return con.getlimit(9) // _VARIABLES_PER_RECORD
+    except Exception:
+        return 999 // _VARIABLES_PER_RECORD
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+CHROMA_MAX_BATCH: int = _compute_chroma_max_batch()
+
+
 @dataclass
 class CandidateChunk:
     item_key: str
@@ -226,7 +255,15 @@ class AdvancedRAGRetriever(BaseRetriever):
         stats: dict[str, Any],
     ) -> None:
         existing_ids = self.chroma_client.get_existing_ids(batch_ids)
-        self.chroma_client.upsert_documents(batch_docs, batch_metas, batch_ids)
+        # ChromaDB has a hard per-call limit (SQLITE_LIMIT_VARIABLE_NUMBER).
+        # Sub-slice so no single upsert call ever exceeds CHROMA_MAX_BATCH items.
+        for start in range(0, len(batch_ids), CHROMA_MAX_BATCH):
+            end = start + CHROMA_MAX_BATCH
+            self.chroma_client.upsert_documents(
+                batch_docs[start:end],
+                batch_metas[start:end],
+                batch_ids[start:end],
+            )
         for doc_id in batch_ids:
             if doc_id in existing_ids:
                 stats["updated_chunks"] += 1

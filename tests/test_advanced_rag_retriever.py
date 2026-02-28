@@ -530,3 +530,139 @@ def test_defaults_include_langchain_backend():
     assert defaults["chunk"]["strategy"] == "markdown_recursive_v1", (
         f"Expected chunk.strategy='markdown_recursive_v1', got: {defaults['chunk']['strategy']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# CHROMA_MAX_BATCH sub-slicing in _flush_batch
+# ---------------------------------------------------------------------------
+
+
+class LimitEnforcingChromaClient(FakeChromaClient):
+    """Raises if any single upsert call exceeds max_per_call items."""
+
+    def __init__(self, max_per_call: int):
+        super().__init__()
+        self.max_per_call = max_per_call
+        self.upsert_calls: list[list[str]] = []
+        self.all_ids: list[str] = []
+
+    def upsert_documents(self, documents, metadatas, ids):
+        if len(ids) > self.max_per_call:
+            raise ValueError(
+                f"ChromaDB batch size exceeded: got {len(ids)}, max {self.max_per_call}"
+            )
+        self.upsert_calls.append(list(ids))
+        self.all_ids.extend(ids)
+        self.ids = self.all_ids
+
+
+def test_flush_batch_splits_oversized_single_item_batch(monkeypatch, tmp_path):
+    """_flush_batch must split any batch larger than CHROMA_MAX_BATCH into sub-slices.
+
+    This regression test covers the case where a single item produces more chunks
+    than ChromaDB's hard limit (e.g. 45779 > 5461).  The fix must ensure that
+    upsert_documents is never called with more than CHROMA_MAX_BATCH ids at once.
+    """
+    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.retrievers.advanced_rag import CHROMA_MAX_BATCH
+
+    # Use a tiny limit so we can exercise the split without huge data
+    tiny_limit = 5
+    monkeypatch.setattr(advanced_rag, "CHROMA_MAX_BATCH", tiny_limit)
+
+    # Build n_chunks > tiny_limit docs/metas/ids to simulate an oversized single-item batch
+    n_chunks = tiny_limit * 3 + 1  # e.g. 16 > 5
+    docs = [f"doc {i}" for i in range(n_chunks)]
+    metas = [{"item_key": "I1", "chunk_kind": "content"} for _ in range(n_chunks)]
+    ids = [f"I1:ATT1:{i}" for i in range(n_chunks)]
+
+    client = LimitEnforcingChromaClient(max_per_call=tiny_limit)
+    engine = FakeEngine(str(tmp_path))
+    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+
+    stats = {"added_chunks": 0, "updated_chunks": 0}
+    # Must not raise, even though len(ids) > tiny_limit
+    retriever._flush_batch(docs, metas, ids, stats)
+
+    assert len(client.all_ids) == n_chunks, (
+        f"All {n_chunks} chunks must be upserted; got {len(client.all_ids)}"
+    )
+    assert len(client.upsert_calls) > 1, (
+        "Expected multiple upsert calls when batch exceeds CHROMA_MAX_BATCH"
+    )
+    for call_ids in client.upsert_calls:
+        assert len(call_ids) <= tiny_limit, (
+            f"Single upsert call exceeded limit: {len(call_ids)} > {tiny_limit}"
+        )
+    assert stats["added_chunks"] == n_chunks
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: CHROMA_MAX_BATCH derived from SQLite at runtime
+# ---------------------------------------------------------------------------
+
+
+def test_chroma_max_batch_derived_from_sqlite_limit():
+    """CHROMA_MAX_BATCH must be computed from SQLite's MAX_VARIABLE_NUMBER compile option,
+    not a magic literal, so it stays correct if the SQLite build changes.
+
+    ChromaDB internally uses VARIABLES_PER_RECORD=6 and computes:
+        max_batch = MAX_VARIABLE_NUMBER // 6
+    We mirror that formula so our constant stays in sync.
+    """
+    import sqlite3
+    from zotero_mcp.retrievers.advanced_rag import CHROMA_MAX_BATCH
+
+    con = sqlite3.connect(":memory:")
+    sqlite_var_limit = None
+    for row in con.execute("pragma compile_options"):
+        if "MAX_VARIABLE_NUMBER" in row[0]:
+            sqlite_var_limit = int(row[0].split("=")[1])
+            break
+    if sqlite_var_limit is None:
+        sqlite_var_limit = con.getlimit(9)  # fallback: runtime limit
+    con.close()
+
+    # ChromaDB uses VARIABLES_PER_RECORD=6 (from embeddings_queue.py)
+    expected = sqlite_var_limit // 6
+    assert CHROMA_MAX_BATCH == expected, (
+        f"CHROMA_MAX_BATCH={CHROMA_MAX_BATCH} != expected formula result={expected}. "
+        "The constant must be derived via sqlite MAX_VARIABLE_NUMBER // 6."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: get_existing_ids slices oversized id lists
+# ---------------------------------------------------------------------------
+
+
+def test_get_existing_ids_slices_large_id_lists(monkeypatch):
+    """get_existing_ids must split large id lists into sub-batches to avoid
+    SQLite variable-number errors, and return the union of all results."""
+    from zotero_mcp.chroma_client import ChromaClient, CHROMA_GET_MAX_BATCH
+
+    call_sizes: list[int] = []
+
+    class FakeCollection:
+        def get(self, ids, include):
+            call_sizes.append(len(ids))
+            # Simulate that the first half of any batch "exists"
+            half = ids[: len(ids) // 2]
+            return {"ids": half}
+
+    client = ChromaClient.__new__(ChromaClient)
+    client.collection = FakeCollection()
+
+    n_ids = CHROMA_GET_MAX_BATCH * 2 + 3
+    ids = [f"id_{i}" for i in range(n_ids)]
+
+    result = client.get_existing_ids(ids)
+
+    assert isinstance(result, set)
+    assert len(call_sizes) > 1, (
+        f"Expected multiple collection.get calls for {n_ids} ids, got {len(call_sizes)}"
+    )
+    for sz in call_sizes:
+        assert sz <= CHROMA_GET_MAX_BATCH, (
+            f"A single get call used {sz} ids, exceeding CHROMA_GET_MAX_BATCH={CHROMA_GET_MAX_BATCH}"
+        )

@@ -22,6 +22,34 @@ from chromadb.config import Settings
 logger = logging.getLogger(__name__)
 
 
+def _compute_chroma_get_max_batch() -> int:
+    """Derive a safe batch limit for ChromaDB collection.get() calls.
+
+    collection.get() binds one variable per id.  We use the same
+    SQLite MAX_VARIABLE_NUMBER // 6 formula (conservative — the actual
+    limit for get is higher, but consistency with upsert avoids surprises).
+    """
+    import sqlite3
+
+    _VARIABLES_PER_RECORD = 6
+    try:
+        con = sqlite3.connect(":memory:")
+        for row in con.execute("pragma compile_options"):
+            if "MAX_VARIABLE_NUMBER" in row[0]:
+                return int(row[0].split("=")[1]) // _VARIABLES_PER_RECORD
+        return con.getlimit(9) // _VARIABLES_PER_RECORD
+    except Exception:
+        return 999 // _VARIABLES_PER_RECORD
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+CHROMA_GET_MAX_BATCH: int = _compute_chroma_get_max_batch()
+
+
 @contextmanager
 def suppress_stdout():
     """Context manager to suppress stdout temporarily."""
@@ -406,14 +434,22 @@ class ChromaClient:
             return None
 
     def get_existing_ids(self, ids: list[str]) -> set[str]:
-        """Return the subset of ids that already exist in the collection."""
+        """Return the subset of ids that already exist in the collection.
+
+        Slices the input into sub-batches of at most CHROMA_GET_MAX_BATCH to
+        avoid SQLite variable-number errors on large id lists.
+        """
         if not ids:
             return set()
-        try:
-            result = self.collection.get(ids=ids, include=[])
-            return set(result.get("ids", []))
-        except Exception:
-            return set()
+        found: set[str] = set()
+        for start in range(0, len(ids), CHROMA_GET_MAX_BATCH):
+            batch = ids[start : start + CHROMA_GET_MAX_BATCH]
+            try:
+                result = self.collection.get(ids=batch, include=[])
+                found.update(result.get("ids", []))
+            except Exception:
+                pass  # silently skip failed sub-batch; stats may undercount but upsert succeeds
+        return found
 
 
 def create_chroma_client(config_path: str | None = None) -> ChromaClient:

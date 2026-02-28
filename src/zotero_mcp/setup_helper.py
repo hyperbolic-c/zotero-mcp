@@ -289,6 +289,20 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         chunk_backend = "langchain" if backend_choice == "1" else "legacy"
 
         if chunk_backend == "langchain":
+            print("\nChunking strategy:")
+            print("1. markdown_recursive_v1 - stable default")
+            print("2. semantic_v1 - experimental (falls back to markdown_recursive_v1 if unavailable)")
+            strategy_default = existing_chunk.get("strategy", "markdown_recursive_v1")
+            strategy_default_choice = "2" if strategy_default == "semantic_v1" else "1"
+            while True:
+                strategy_choice = input(
+                    f"Choose strategy [default {strategy_default_choice}]: "
+                ).strip() or strategy_default_choice
+                if strategy_choice in ("1", "2"):
+                    break
+                print("Please enter 1 or 2")
+            chunk_strategy = "semantic_v1" if strategy_choice == "2" else "markdown_recursive_v1"
+
             chunk_size_default = existing_chunk.get("chunk_size", 1100)
             while True:
                 raw = input(f"chunk_size [{chunk_size_default}]: ").strip()
@@ -319,7 +333,7 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
 
             chunk_cfg = {
                 "backend": "langchain",
-                "strategy": existing_chunk.get("strategy", "markdown_recursive_v1"),
+                "strategy": chunk_strategy,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
                 "min_chunk_chars": existing_chunk.get("min_chunk_chars", 220),

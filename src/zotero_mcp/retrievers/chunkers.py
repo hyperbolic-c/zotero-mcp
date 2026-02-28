@@ -20,6 +20,7 @@ from .chunker_types import (
     BACKEND_LANGCHAIN,
     BACKEND_LEGACY,
     STRATEGY_MARKDOWN_RECURSIVE_V1,
+    STRATEGY_SEMANTIC_V1,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_HEADERS,
@@ -251,6 +252,13 @@ def get_chunking_backend(chunk_cfg: dict[str, Any]) -> ChunkingBackend:
 
     strategy = chunk_cfg.get("strategy", STRATEGY_MARKDOWN_RECURSIVE_V1)
     if strategy == STRATEGY_MARKDOWN_RECURSIVE_V1:
+        return LangChainMarkdownRecursiveChunker(chunk_cfg)
+    if strategy == STRATEGY_SEMANTIC_V1:
+        logger.warning(
+            "Chunking strategy %r is not implemented yet; falling back to %r.",
+            STRATEGY_SEMANTIC_V1,
+            STRATEGY_MARKDOWN_RECURSIVE_V1,
+        )
         return LangChainMarkdownRecursiveChunker(chunk_cfg)
 
     # Unknown strategy → warn and fall back

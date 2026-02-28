@@ -7,6 +7,7 @@ from zotero_mcp.retrievers.chunker_types import (
     BACKEND_LANGCHAIN,
     BACKEND_LEGACY,
     STRATEGY_MARKDOWN_RECURSIVE_V1,
+    STRATEGY_SEMANTIC_V1,
 )
 from zotero_mcp.retrievers.chunkers import (
     LangChainMarkdownRecursiveChunker,
@@ -194,6 +195,11 @@ def test_factory_returns_legacy_when_requested():
 def test_factory_unknown_strategy_falls_back_to_legacy():
     backend = get_chunking_backend({"backend": "langchain", "strategy": "nonexistent_v99"})
     assert isinstance(backend, LegacyChunkingBackend)
+
+
+def test_factory_semantic_v1_falls_back_to_markdown_recursive():
+    backend = get_chunking_backend({"backend": "langchain", "strategy": STRATEGY_SEMANTIC_V1})
+    assert isinstance(backend, LangChainMarkdownRecursiveChunker)
 
 
 # ---------------------------------------------------------------------------

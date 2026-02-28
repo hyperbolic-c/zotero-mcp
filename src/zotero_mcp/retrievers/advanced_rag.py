@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import logging
 import os
 import re
@@ -247,6 +248,132 @@ class AdvancedRAGRetriever(BaseRetriever):
             return {}
         return item_to_attachments
 
+    def _fetch_items_and_attachments_from_local_db(
+        self, limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+        """Fetch items and their attachment map from local SQLite in one pass.
+
+        This is the primary data-loading path for advanced_rag mode.
+        It avoids the Zotero HTTP API entirely — only the on-disk
+        ``zotero.sqlite`` is required (Zotero does not need to be running).
+
+        Returns:
+            A ``(api_items, attachment_map)`` tuple where *api_items* is a list
+            of dicts in the same format produced by
+            ``engine._get_items_from_source()`` and *attachment_map* maps each
+            parent item key to a list of attachment keys.
+
+        Raises:
+            FileNotFoundError: If the Zotero database cannot be located.
+            Exception: On any unexpected SQLite / IO error (caller should
+            fall back to the API path).
+        """
+        # --- resolve db_path / pdf_max_pages from config (same as legacy) ---
+        zotero_db_path = self.engine.db_path
+        pdf_max_pages = None
+        config_path = self.engine.config_path
+        try:
+            if config_path and os.path.exists(config_path):
+                with open(config_path) as _f:
+                    _cfg = json.load(_f)
+                    sem_cfg = _cfg.get("semantic_search", {})
+                    pdf_max_pages = sem_cfg.get("extraction", {}).get("pdf_max_pages")
+                    if not zotero_db_path:
+                        zotero_db_path = sem_cfg.get("zotero_db_path")
+        except Exception:
+            pass
+
+        with LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+            sys.stderr.write("Scanning local Zotero database for items...\n")
+            local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
+            sys.stderr.write(f"Found {len(local_items)} candidate items.\n")
+
+            # --- dedup: prefer journalArticle over preprint with same DOI/title ---
+            def _norm(s: str | None) -> str | None:
+                return "".join(s.lower().split()) if s else None
+
+            key_to_best: dict[tuple[str, str | None], Any] = {}
+            for it in local_items:
+                doi_key = ("doi", _norm(it.doi)) if it.doi else None
+                title_key = ("title", _norm(it.title)) if it.title else None
+                prefer_types = {"journalArticle": 2, "preprint": 1}
+                for k in (doi_key, title_key):
+                    if not k:
+                        continue
+                    cur = key_to_best.get(k)
+                    if cur is None:
+                        key_to_best[k] = it
+                    else:
+                        if prefer_types.get(it.item_type or "", 0) > prefer_types.get(cur.item_type or "", 0):
+                            key_to_best[k] = it
+
+            filtered_items = []
+            for it in local_items:
+                if it.item_type == "preprint":
+                    doi_key = ("doi", _norm(it.doi)) if it.doi else None
+                    title_key = ("title", _norm(it.title)) if it.title else None
+                    drop = False
+                    for k in (doi_key, title_key):
+                        if not k:
+                            continue
+                        best = key_to_best.get(k)
+                        if best is not None and best is not it and best.item_type == "journalArticle":
+                            drop = True
+                            break
+                    if drop:
+                        continue
+                filtered_items.append(it)
+
+            if len(filtered_items) != len(local_items):
+                sys.stderr.write(
+                    f"After dedup: {len(filtered_items)} items "
+                    f"(dropped {len(local_items) - len(filtered_items)} preprints).\n"
+                )
+
+            # --- build attachment map AND convert items in one pass ---
+            api_items: list[dict[str, Any]] = []
+            attachment_map: dict[str, list[str]] = {}
+
+            for item in filtered_items:
+                # attachment keys
+                att_keys = [
+                    att_key
+                    for att_key, _, _ in reader._iter_parent_attachments(item.item_id)
+                    if att_key
+                ]
+                if att_keys:
+                    attachment_map[item.key] = att_keys
+
+                # convert to API-compatible dict
+                api_item: dict[str, Any] = {
+                    "key": item.key,
+                    "version": 0,
+                    "data": {
+                        "key": item.key,
+                        "itemType": item.item_type or "journalArticle",
+                        "title": item.title or "",
+                        "abstractNote": item.abstract or "",
+                        "extra": item.extra or "",
+                        "dateAdded": item.date_added,
+                        "dateModified": item.date_modified,
+                        "creators": (
+                            self.engine._parse_creators_string(item.creators)
+                            if item.creators
+                            else []
+                        ),
+                    },
+                }
+                if item.notes:
+                    api_item["data"]["notes"] = item.notes
+                api_items.append(api_item)
+
+            logger.info(
+                "Local DB: %d items, %d with attachments",
+                len(api_items),
+                len(attachment_map),
+            )
+            return api_items, attachment_map
+
     def _flush_batch(
         self,
         batch_docs: list[str],
@@ -300,9 +427,20 @@ class AdvancedRAGRetriever(BaseRetriever):
         if force_rebuild:
             self.chroma_client.reset_collection()
 
-        items = self.engine._get_items_from_source(limit=limit, extract_fulltext=False)
+        # Primary path: read items + attachments from local SQLite (no
+        # Zotero HTTP API needed).  Fall back to the legacy API path if
+        # the local database is unavailable.
+        try:
+            items, attachment_map = self._fetch_items_and_attachments_from_local_db(limit=limit)
+        except Exception as exc:
+            logger.warning(
+                "Local Zotero DB unavailable (%s), falling back to HTTP API",
+                exc,
+            )
+            items = self.engine._get_items_from_source(limit=limit, extract_fulltext=False)
+            attachment_map = self._collect_attachment_map(limit=limit)
+
         stats["total_items"] = len(items)
-        attachment_map = self._collect_attachment_map(limit=limit)
         try:
             sys.stderr.write(f"Total items to index: {stats['total_items']}\n")
         except Exception:

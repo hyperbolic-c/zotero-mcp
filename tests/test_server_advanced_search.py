@@ -82,3 +82,24 @@ def test_advanced_search_rejects_unknown_operation(monkeypatch):
     )
 
     assert "Unsupported operation" in result
+
+
+from zotero_mcp.server_tools.common import extract_field_values, compare_field_value
+
+
+def test_extract_field_values_creators():
+    data = {"creators": [{"firstName": "Jane", "lastName": "Doe"}]}
+    assert extract_field_values(data, "author") == ["Jane Doe"]
+
+
+def test_extract_field_values_year():
+    data = {"date": "2024-01-01"}
+    assert extract_field_values(data, "year") == ["2024"]
+
+
+def test_compare_field_value_contains():
+    assert compare_field_value("Quantum Networks", "quantum", "contains") is True
+
+
+def test_compare_field_value_is_greater_than():
+    assert compare_field_value("2024", "2020", "isGreaterThan") is True

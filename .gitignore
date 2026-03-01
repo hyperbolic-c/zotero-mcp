@@ -43,4 +43,5 @@ uv.lock
 # Local project docs
 CLAUDE.md
 .claude/
-docs/plans/.worktrees/
+docs/plans/
+.worktrees/

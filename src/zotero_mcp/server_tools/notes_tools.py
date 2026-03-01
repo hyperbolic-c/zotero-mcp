@@ -361,8 +361,6 @@ def create_note(
         return f"Error creating note: {str(e)}"
 
 
-
-
 def register(mcp: FastMCP) -> None:
     mcp.tool(name="zotero_get_notes", description="Retrieve notes from your Zotero library, with options to filter by parent item.")(get_notes)
     mcp.tool(name="zotero_search_notes", description="Search for notes across your Zotero library.")(search_notes)

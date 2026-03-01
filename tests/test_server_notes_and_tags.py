@@ -1,5 +1,5 @@
 from zotero_mcp import server
-from zotero_mcp.server_tools import notes_tools, search_admin_tools
+from zotero_mcp.server_tools import notes_tools, search_tools
 
 
 class DummyContext:
@@ -102,7 +102,7 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
         }
     ]
     monkeypatch.setattr(
-        search_admin_tools, "get_zotero_client", lambda: FakeZoteroForTags(items)
+        search_tools, "get_zotero_client", lambda: FakeZoteroForTags(items)
     )
 
     result = server.batch_update_tags(

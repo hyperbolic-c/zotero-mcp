@@ -196,18 +196,22 @@ def update_search_database(
     try:
         ctx.info("Starting semantic search database update...")
 
-        # Import semantic search module
-        from zotero_mcp.semantic_search import create_semantic_search
+        # Import semantic search and indexer modules
+        from zotero_mcp.semantic_search import ZoteroSemanticSearch
+        from zotero_mcp.indexer import ZoteroIndexer
         from pathlib import Path
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
 
-        # Create semantic search instance
-        search = create_semantic_search(str(config_path))
+        # Create semantic search instance to get configuration
+        search = ZoteroSemanticSearch(config_path=str(config_path))
+        
+        # Create indexer instance (can also use search.indexer if preferred)
+        indexer = search.indexer
 
         # Perform update with no fulltext extraction (for speed)
-        stats = search.update_database(
+        stats = indexer.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
             extract_fulltext=False

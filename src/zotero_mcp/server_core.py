@@ -27,8 +27,9 @@ async def server_lifespan(server: FastMCP):
 
                 async def background_update():
                     try:
+                        # Use indexer directly for auto-update
                         stats = await asyncio.to_thread(
-                            search.update_database, extract_fulltext=False
+                            search.indexer.update_database, extract_fulltext=False
                         )
                         sys.stderr.write(
                             f"Database update completed: {stats.get('processed_items', 0)} items processed\\n"

@@ -485,6 +485,18 @@ class AdvancedRAGRetriever(BaseRetriever):
                     stats["skipped_items"] += 1
                     continue
 
+                # 1. Clean up old chunks for this item to prevent residuals
+                # (A key:meta:0 might remain if upserted, but older indexed chunks like
+                # A:att:5 from a previous chunking run would stay forever without this).
+                if not force_rebuild:
+                    try:
+                        self.chroma_client.delete_by_item_key(item_key)
+                        if self.refs_client is not self.chroma_client:
+                            self.refs_client.delete_by_metadata({"item_key": item_key})
+                    except Exception as exc:
+                        logger.warning("Error cleaning up old chunks for item %s: %s", item_key, exc)
+
+                # 2. Build new chunks
                 docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
                     item, attachment_map.get(item_key, [])
                 )

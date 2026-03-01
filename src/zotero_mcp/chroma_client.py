@@ -447,6 +447,29 @@ class ChromaClient:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
 
+    def delete_by_metadata(self, where: dict[str, Any]) -> None:
+        """
+        Delete documents from the collection matching metadata filters.
+
+        Args:
+            where: Metadata filter conditions (Chroma format)
+        """
+        try:
+            self.collection.delete(where=where)
+            logger.info(f"Deleted documents matching filter {where} from ChromaDB collection")
+        except Exception as e:
+            logger.error(f"Error deleting documents by metadata: {e}")
+            raise
+
+    def delete_by_item_key(self, item_key: str) -> None:
+        """
+        Delete all documents (chunks) associated with a specific Zotero item key.
+
+        Args:
+            item_key: Zotero item key
+        """
+        self.delete_by_metadata({"item_key": item_key})
+
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
         try:

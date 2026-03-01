@@ -325,10 +325,10 @@ def test_rerank_passes_top_n_to_ranker(monkeypatch, tmp_path):
     )
 
 
-# --- delete_item delegates through retriever in advanced_rag mode ---
+# --- semantic search boundary tests ---
 
-def test_delete_item_advanced_rag_raises_not_implemented(monkeypatch):
-    """delete_item must raise NotImplementedError (not silently fail) for advanced_rag mode."""
+def test_semantic_search_does_not_expose_delete_item(monkeypatch):
+    """Search interface should not expose indexing/deletion operations."""
     from zotero_mcp import semantic_search as ss
 
     class StubRetriever:
@@ -340,10 +340,7 @@ def test_delete_item_advanced_rag_raises_not_implemented(monkeypatch):
     monkeypatch.setattr(ss, "create_retriever", lambda mode, engine: StubRetriever())
 
     search = ss.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
-    search.retriever_mode = "advanced_rag"
-
-    with pytest.raises(NotImplementedError):
-        search.delete_item("SOMEKEY")
+    assert not hasattr(search, "delete_item")
 
 
 def test_advanced_rag_ingest_and_item_level_search(monkeypatch, tmp_path):

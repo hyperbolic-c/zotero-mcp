@@ -11,14 +11,10 @@ import os
 import sys
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .chroma_client import ChromaClient, create_chroma_client
+from .chroma_client import ChromaClient
 from .client import get_zotero_client
-from .utils import format_creators, is_local_mode
-from .local_db import LocalZoteroReader
 from .retrievers.factory import create_retriever
 from .indexer import ZoteroIndexer
 
@@ -63,9 +59,11 @@ class ZoteroSemanticSearch:
         self.indexer = ZoteroIndexer(
             retriever_mode=self.retriever_mode,
             config_path=self.config_path,
+            db_path=self.db_path,
             semantic_config=self.semantic_config,
             chroma_client=self.chroma_client,
-            zotero_client=self.zotero_client
+            zotero_client=self.zotero_client,
+            retriever_factory=create_retriever,
         )
         
         # Pull state from indexer for convenience and backward compatibility
@@ -188,7 +186,12 @@ class ZoteroSemanticSearch:
     def get_database_status(self) -> dict[str, Any]:
         """Get the current status of the semantic database."""
         try:
-            return self.retriever.get_database_status()
+            status = self.retriever.get_database_status()
+            status["update_config"] = self.indexer.update_config
+            status["should_update"] = self.indexer.should_update_database()
+            status["last_update"] = self.indexer.update_config.get("last_update")
+            status["retriever_mode"] = status.get("retriever_mode", self.retriever_mode)
+            return status
         except Exception as e:
             logger.error(f"Error getting database status: {e}")
             return {"error": str(e)}

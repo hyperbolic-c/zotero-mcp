@@ -8,7 +8,7 @@ if sys.version_info >= (3, 14):
         allow_module_level=True,
     )
 
-from zotero_mcp import semantic_search
+from zotero_mcp.indexer import ZoteroIndexer
 
 
 class FakeChromaClient:
@@ -24,8 +24,21 @@ class FakeChromaClient:
 
 
 def test_process_item_batch_tracks_added_vs_updated(monkeypatch):
-    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
-    search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
+    class DummyRetriever:
+        def ingest_data(self, **_kwargs):
+            return {}
+
+        def search(self, **_kwargs):
+            return {}
+
+        def get_database_status(self):
+            return {}
+
+    indexer = ZoteroIndexer(
+        chroma_client=FakeChromaClient(),
+        zotero_client=object(),
+        retriever_factory=lambda _mode, _engine: DummyRetriever(),
+    )
 
     items = [
         {
@@ -48,7 +61,7 @@ def test_process_item_batch_tracks_added_vs_updated(monkeypatch):
         },
     ]
 
-    stats = search._process_item_batch(items, force_rebuild=False)
+    stats = indexer._process_item_batch(items, force_rebuild=False)
 
     assert stats["processed"] == 2
     assert stats["updated"] == 1

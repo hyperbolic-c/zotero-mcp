@@ -232,3 +232,58 @@ def test_empty_text_returns_no_chunks():
 def test_legacy_empty_text_returns_no_chunks():
     backend = LegacyChunkingBackend({"max_chars": 200, "overlap_chars": 20, "min_chunk_chars": 10})
     assert backend.chunk("") == []
+
+
+def test_heading_based_references_excluded_from_content_chunks():
+    md = (
+        "# Intro\n\n"
+        + ("intro body " * 200)
+        + "\n\n## References\n\n"
+        + "[1] Smith et al. doi:10.1000/1\n"
+        + "[2] Doe et al. doi:10.1000/2\n"
+    )
+    chunker = LangChainMarkdownRecursiveChunker(_lc_cfg(min_chunk_chars=20))
+    records = chunker.chunk(md)
+    content = [r for r in records if r.chunk_kind == "content"]
+    refs = [r for r in records if r.chunk_kind == "references"]
+    assert content
+    assert refs
+    assert all("doi:10.1000/1" not in r.text for r in content)
+    assert sorted([r.extra_metadata.get("ref_num") for r in refs]) == [1, 2]
+
+
+def test_no_heading_tail_references_excluded_with_dual_gate():
+    body = "\n".join([f"body line {i} " + ("word " * 30) for i in range(40)])
+    refs = "\n".join([f"[{i}] Smith et al. doi:10.1000/{i}" for i in range(1, 13)])
+    md = body + "\n\n" + refs
+    chunker = LangChainMarkdownRecursiveChunker(
+        _lc_cfg(min_chunk_chars=20, reference_block_min_doc_chars=100)
+    )
+    records = chunker.chunk(md)
+    assert any(r.chunk_kind == "references" for r in records)
+    assert all("doi:10.1000/1" not in r.text for r in records if r.chunk_kind == "content")
+
+
+def test_section_chunk_overrides_exact_and_whole_word_matching():
+    md = (
+        "# Methodology Note\n\n"
+        + ("alpha " * 300)
+        + "\n\n## Methods and Materials\n\n"
+        + ("beta " * 300)
+    )
+    chunker = LangChainMarkdownRecursiveChunker(
+        _lc_cfg(
+            chunk_size=200,
+            min_chunk_chars=30,
+            section_chunk_overrides={"method": {"chunk_size": 80}, "methods": {"chunk_size": 600}},
+        )
+    )
+    records = chunker.chunk(md)
+    methodology_chunks = [r for r in records if r.section_title == "Methodology Note"]
+    methods_chunks = [r for r in records if r.section_title == "Methods and Materials"]
+    assert methodology_chunks
+    assert methods_chunks
+    # "method" should not whole-word match "Methodology"
+    assert max(len(r.text) for r in methodology_chunks) <= 220
+    # "methods" should match whole word and use larger chunks.
+    assert max(len(r.text) for r in methods_chunks) > 300

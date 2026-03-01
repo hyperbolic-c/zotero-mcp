@@ -30,4 +30,5 @@ class ChunkRecord:
     chunk_index: int = 0
     char_start: int = 0
     char_end: int = 0
+    chunk_kind: str = "content"
     extra_metadata: dict = field(default_factory=dict)

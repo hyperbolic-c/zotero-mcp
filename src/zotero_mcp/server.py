@@ -2532,6 +2532,8 @@ def semantic_search(
     query: str,
     limit: int = 10,
     filters: dict[str, str] | str | None = None,
+    abstract_max_chars: int | None = None,
+    matched_content_max_chars: int | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -2542,14 +2544,28 @@ def semantic_search(
         query: Search query text - can be concepts, topics, or natural language descriptions
         limit: Maximum number of results to return (default: 10)
         filters: Optional metadata filters as dict or JSON string. Example: {"item_type": "note"}
+        abstract_max_chars: Optional max characters for abstract display. None means no truncation.
+        matched_content_max_chars: Optional max characters for matched content display. None means no truncation.
         ctx: MCP context
 
     Returns:
         Markdown-formatted search results with similarity scores
     """
+    def _format_with_optional_limit(text: str, max_chars: int | None) -> str:
+        if max_chars is None:
+            return text
+        if len(text) > max_chars:
+            return text[:max_chars] + "..."
+        return text
+
     try:
         if not query.strip():
             return "Error: Search query cannot be empty"
+
+        if abstract_max_chars is not None and abstract_max_chars <= 0:
+            return "Error: abstract_max_chars must be a positive integer when provided"
+        if matched_content_max_chars is not None and matched_content_max_chars <= 0:
+            return "Error: matched_content_max_chars must be a positive integer when provided"
 
         # Parse and validate filters parameter
         if filters is not None:
@@ -2627,10 +2643,11 @@ def semantic_search(
                 if date := data.get("date"):
                     output.append(f"**Date:** {date}")
 
-                # Add abstract snippet if present
+                # Add abstract if present (optionally truncated by caller)
                 if abstract := data.get("abstractNote"):
-                    abstract_snippet = abstract[:200] + "..." if len(abstract) > 200 else abstract
-                    output.append(f"**Abstract:** {abstract_snippet}")
+                    output.append(
+                        f"**Abstract:** {_format_with_optional_limit(abstract, abstract_max_chars)}"
+                    )
 
                 # Add tags if present
                 if tags := data.get("tags"):
@@ -2641,8 +2658,9 @@ def semantic_search(
                 # Show matched text snippet
                 matched_text = result.get("matched_text", "")
                 if matched_text:
-                    snippet = matched_text[:300] + "..." if len(matched_text) > 300 else matched_text
-                    output.append(f"**Matched Content:** {snippet}")
+                    output.append(
+                        f"**Matched Content:** {_format_with_optional_limit(matched_text, matched_content_max_chars)}"
+                    )
 
                 output.append("")  # Empty line between items
             else:

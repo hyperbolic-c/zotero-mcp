@@ -303,7 +303,7 @@ The first time you use PDF annotation features, the necessary tools will be auto
 ## 📚 Available Tools
 
 ### 🧠 Semantic Search Tools
-- `zotero_semantic_search`: AI-powered similarity search with embedding models
+- `zotero_semantic_search`: AI-powered similarity search with embedding models. By default, returns full abstract and matched content; optional `abstract_max_chars` and `matched_content_max_chars` let clients request truncation.
 - `zotero_update_search_database`: Manually update the semantic search database
 - `zotero_get_search_database_status`: Check database status and configuration
 

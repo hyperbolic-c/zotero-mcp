@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
 
-from typing import Dict
-
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 from chromadb.config import Settings
@@ -103,6 +101,14 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         )
         return [data.embedding for data in response.data]
 
+    def get_dim(self) -> int:
+        dims = {
+            "text-embedding-3-small": 1536,
+            "text-embedding-3-large": 3072,
+            "text-embedding-ada-002": 1536,
+        }
+        return dims.get(self.model_name, -1)
+
 
 class GeminiEmbeddingFunction(EmbeddingFunction):
     """Custom Gemini embedding function for ChromaDB using google-genai."""
@@ -155,6 +161,13 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             embeddings.append(response.embeddings[0].values)
         return embeddings
 
+    def get_dim(self) -> int:
+        dims = {
+            "gemini-embedding-001": 3072,
+            "text-embedding-004": 768,
+        }
+        return dims.get(self.model_name, -1)
+
 
 class HuggingFaceEmbeddingFunction(EmbeddingFunction):
     """Custom HuggingFace embedding function for ChromaDB using sentence-transformers."""
@@ -187,6 +200,16 @@ class HuggingFaceEmbeddingFunction(EmbeddingFunction):
         embeddings = self.model.encode(input, convert_to_numpy=True)
         return embeddings.tolist()
 
+    def get_dim(self) -> int:
+        return int(self.model.get_sentence_embedding_dimension())
+
+
+class DefaultMiniLMEmbeddingFunction(chromadb.utils.embedding_functions.DefaultEmbeddingFunction):
+    """Default Chroma embedding function with an explicit fixed dimension."""
+
+    def get_dim(self) -> int:
+        return 384
+
 
 class ChromaClient:
     """ChromaDB client for Zotero semantic search."""
@@ -208,6 +231,7 @@ class ChromaClient:
         self.collection_name = collection_name
         self.embedding_model = embedding_model
         self.embedding_config = embedding_config or {}
+        self._resolved_dim: int | None = None
 
         # Set up persistent directory
         if persist_directory is None:
@@ -282,7 +306,35 @@ class ChromaClient:
 
         else:
             # Use ChromaDB's default embedding function (all-MiniLM-L6-v2)
-            return chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
+            return DefaultMiniLMEmbeddingFunction()
+
+    @property
+    def embedding_dim(self) -> int:
+        if self._resolved_dim is not None:
+            return self._resolved_dim
+
+        if hasattr(self.embedding_function, "get_dim"):
+            dim = int(getattr(self.embedding_function, "get_dim")())
+            if dim > 0:
+                self._resolved_dim = dim
+                return dim
+
+        # Unknown model dimensions: probe once and cache.
+        try:
+            probe = self.embedding_function(["dim_probe"])
+            dim = len(probe[0]) if probe and probe[0] is not None else 0
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to resolve embedding dimension for model '{self.embedding_model}': {exc}"
+            ) from exc
+
+        if dim <= 0:
+            raise RuntimeError(
+                f"Unable to resolve embedding dimension for model '{self.embedding_model}' via probe"
+            )
+
+        self._resolved_dim = int(dim)
+        return self._resolved_dim
 
     def add_documents(self,
                      documents: list[str],
@@ -328,6 +380,27 @@ class ChromaClient:
             logger.info(f"Upserted {len(documents)} documents to ChromaDB collection")
         except Exception as e:
             logger.error(f"Error upserting documents to ChromaDB: {e}")
+            raise
+
+    def upsert_raw(
+        self,
+        documents: list[str],
+        metadatas: list[dict[str, Any]],
+        ids: list[str],
+    ) -> None:
+        """Upsert documents with explicit raw embeddings (used for refs collection)."""
+        try:
+            dim = self.embedding_dim
+            embeddings = [[0.0] * dim for _ in ids]
+            self.collection.upsert(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids,
+                embeddings=embeddings,
+            )
+            logger.info(f"Upserted {len(documents)} raw documents to ChromaDB collection")
+        except Exception as e:
+            logger.error(f"Error upserting raw documents to ChromaDB: {e}")
             raise
 
     def search(self,

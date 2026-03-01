@@ -12,12 +12,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from zotero_mcp.chroma_client import ChromaClient
+from zotero_mcp.chroma_client import CHROMA_GET_MAX_BATCH, ChromaClient
 from zotero_mcp.local_db import LocalZoteroReader
 from zotero_mcp.utils import format_creators, is_local_mode
 
 from .base import BaseRetriever
 from .chunkers import ChunkingBackend, get_chunking_backend
+from .reference_parser import extract_numeric_citation_ids
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,10 @@ class CandidateChunk:
 
 
 class AdvancedRAGRetriever(BaseRetriever):
-    def __init__(self, engine: Any, chroma_client: ChromaClient):
+    def __init__(self, engine: Any, chroma_client: ChromaClient, refs_client: ChromaClient | None = None):
         self.engine = engine
         self.chroma_client = chroma_client
+        self.refs_client = refs_client
         self.config = engine.semantic_config.get("advanced_rag", {})
         self.chunk_cfg = self.config.get("chunk", {})
         self.retrieve_cfg = self.config.get("retrieve", {})
@@ -73,6 +75,17 @@ class AdvancedRAGRetriever(BaseRetriever):
         self._ranker = None
         self._reranker_status = self._init_reranker()
         self._chunking_backend: ChunkingBackend = get_chunking_backend(self.chunk_cfg)
+        if self.refs_client is None:
+            try:
+                self.refs_client = ChromaClient(
+                    collection_name="zotero_rag_refs_v1",
+                    persist_directory=self.chroma_client.persist_directory,
+                    embedding_model=self.chroma_client.embedding_model,
+                    embedding_config=self.chroma_client.embedding_config,
+                )
+            except Exception as exc:
+                logger.warning("Unable to initialize dedicated refs collection, using primary client: %s", exc)
+                self.refs_client = self.chroma_client
 
     def _init_reranker(self) -> str:
         if not self.reranker_cfg.get("enabled", True):
@@ -172,13 +185,23 @@ class AdvancedRAGRetriever(BaseRetriever):
         self,
         item: dict[str, Any],
         attachment_keys: list[str],
-    ) -> tuple[list[str], list[dict[str, Any]], list[str]]:
+    ) -> tuple[
+        list[str],
+        list[dict[str, Any]],
+        list[str],
+        list[str],
+        list[dict[str, Any]],
+        list[str],
+    ]:
         item_key = item.get("key", "")
         base_meta = self._base_metadata(item)
 
         docs: list[str] = []
         metas: list[dict[str, Any]] = []
         ids: list[str] = []
+        ref_docs: list[str] = []
+        ref_metas: list[dict[str, Any]] = []
+        ref_ids: list[str] = []
 
         for attachment_key in sorted(set(attachment_keys)):
             md_files = self._iter_markdown_files(attachment_key)
@@ -195,8 +218,11 @@ class AdvancedRAGRetriever(BaseRetriever):
             if not merged_text:
                 continue
 
-            chunk_records = self._chunking_backend.chunk(merged_text)
-            for record in chunk_records:
+            records = self._chunking_backend.chunk(merged_text)
+            body_records = [r for r in records if r.chunk_kind != "references"]
+            reference_records = [r for r in records if r.chunk_kind == "references"]
+
+            for record in body_records:
                 docs.append(record.text)
                 chunk_meta = dict(base_meta)
                 chunk_meta.update(
@@ -211,6 +237,21 @@ class AdvancedRAGRetriever(BaseRetriever):
                 chunk_meta.update(record.extra_metadata)
                 metas.append(chunk_meta)
                 ids.append(f"{item_key}:{attachment_key}:{record.chunk_index}")
+
+            for record in reference_records:
+                ref_num = int(record.extra_metadata.get("ref_num", -1))
+                if ref_num < 0:
+                    continue
+                ref_docs.append(record.text)
+                ref_meta = {
+                    "item_key": item_key,
+                    "attachment_key": attachment_key,
+                    "ref_num": ref_num,
+                    "section_title": "references",
+                    "chunk_kind": "references",
+                }
+                ref_metas.append(ref_meta)
+                ref_ids.append(f"{item_key}:{attachment_key}:ref:{ref_num}")
 
         meta_text = self._build_meta_text(item)
         if meta_text:
@@ -228,7 +269,7 @@ class AdvancedRAGRetriever(BaseRetriever):
             metas.append(meta_meta)
             ids.append(f"{item_key}:meta:0")
 
-        return docs, metas, ids
+        return docs, metas, ids, ref_docs, ref_metas, ref_ids
 
     def _collect_attachment_map(self, limit: int | None = None) -> dict[str, list[str]]:
         if not is_local_mode():
@@ -397,6 +438,21 @@ class AdvancedRAGRetriever(BaseRetriever):
             else:
                 stats["added_chunks"] += 1
 
+    def _flush_refs_batch(
+        self,
+        ref_docs: list[str],
+        ref_metas: list[dict[str, Any]],
+        ref_ids: list[str],
+    ) -> None:
+        if not ref_ids:
+            return
+        for start in range(0, len(ref_ids), CHROMA_MAX_BATCH):
+            end = start + CHROMA_MAX_BATCH
+            if hasattr(self.refs_client, "upsert_raw"):
+                self.refs_client.upsert_raw(ref_docs[start:end], ref_metas[start:end], ref_ids[start:end])
+            else:
+                self.refs_client.upsert_documents(ref_docs[start:end], ref_metas[start:end], ref_ids[start:end])
+
     def ingest_data(
         self,
         force_rebuild: bool = False,
@@ -426,6 +482,8 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         if force_rebuild:
             self.chroma_client.reset_collection()
+            if self.refs_client is not self.chroma_client:
+                self.refs_client.reset_collection()
 
         # Primary path: read items + attachments from local SQLite (no
         # Zotero HTTP API needed).  Fall back to the legacy API path if
@@ -449,6 +507,9 @@ class AdvancedRAGRetriever(BaseRetriever):
         batch_docs: list[str] = []
         batch_metas: list[dict[str, Any]] = []
         batch_ids: list[str] = []
+        batch_ref_docs: list[str] = []
+        batch_ref_metas: list[dict[str, Any]] = []
+        batch_ref_ids: list[str] = []
         batch_size = int(self.ingest_cfg.get("batch_size", 500))
         sleep_seconds = float(self.ingest_cfg.get("sleep_between_batches", 1.0))
         next_milestone = 10 if stats["total_items"] >= 10 else stats["total_items"]
@@ -461,7 +522,9 @@ class AdvancedRAGRetriever(BaseRetriever):
                     stats["skipped_items"] += 1
                     continue
 
-                docs, metas, ids = self._build_item_chunks(item, attachment_map.get(item_key, []))
+                docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
+                    item, attachment_map.get(item_key, [])
+                )
                 if not docs:
                     stats["skipped_items"] += 1
                     continue
@@ -469,13 +532,20 @@ class AdvancedRAGRetriever(BaseRetriever):
                 batch_docs.extend(docs)
                 batch_metas.extend(metas)
                 batch_ids.extend(ids)
+                batch_ref_docs.extend(ref_docs)
+                batch_ref_metas.extend(ref_metas)
+                batch_ref_ids.extend(ref_ids)
                 stats["processed_items"] += 1
 
                 if len(batch_ids) >= batch_size:
                     self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
+                    self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
                     batch_docs.clear()
                     batch_metas.clear()
                     batch_ids.clear()
+                    batch_ref_docs.clear()
+                    batch_ref_metas.clear()
+                    batch_ref_ids.clear()
                     if sleep_seconds > 0:
                         time.sleep(sleep_seconds)
             except Exception as exc:
@@ -500,6 +570,7 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         if batch_ids:
             self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
+            self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
 
         end_time = datetime.now()
         stats["duration"] = str(end_time - start_time)
@@ -573,11 +644,75 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         return hydrated
 
+    def _refs_get_by_ids(self, ids: list[str]) -> dict[str, list[Any]]:
+        if not ids:
+            return {"ids": [], "documents": [], "metadatas": []}
+        out_ids: list[str] = []
+        out_docs: list[str] = []
+        out_metas: list[dict[str, Any]] = []
+        for start in range(0, len(ids), CHROMA_GET_MAX_BATCH):
+            batch = ids[start : start + CHROMA_GET_MAX_BATCH]
+            try:
+                result = self.refs_client.collection.get(
+                    ids=batch, include=["documents", "metadatas"]
+                )
+            except Exception:
+                continue
+            out_ids.extend(result.get("ids", []) or [])
+            out_docs.extend(result.get("documents", []) or [])
+            out_metas.extend(result.get("metadatas", []) or [])
+        return {"ids": out_ids, "documents": out_docs, "metadatas": out_metas}
+
+    def _resolve_citations(
+        self,
+        item_key: str,
+        attachment_key: str,
+        citation_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        if not citation_ids:
+            return []
+        resolved: list[dict[str, Any]] = []
+        att_key = attachment_key
+
+        # Bounded fallback for metadata-only hits.
+        if att_key == "meta":
+            try:
+                fallback = self.refs_client.collection.get(
+                    where={"item_key": item_key},
+                    include=["ids"],
+                    limit=1,
+                )
+                fallback_ids = fallback.get("ids", []) or []
+                if fallback_ids:
+                    found_id = fallback_ids[0]
+                    if ":ref:" in found_id:
+                        att_key = found_id.split(":", 2)[1]
+                        logger.debug(
+                            "Meta fallback resolved attachment_key=%s for item_key=%s",
+                            att_key,
+                            item_key,
+                        )
+            except Exception:
+                pass
+
+        ref_ids = [f"{item_key}:{att_key}:ref:{n}" for n in citation_ids]
+        ref_results = self._refs_get_by_ids(ref_ids)
+        for ret_id, doc in zip(ref_results.get("ids", []), ref_results.get("documents", [])):
+            try:
+                ref_num = int(str(ret_id).rsplit(":ref:", 1)[-1])
+            except Exception:
+                continue
+            resolved.append({"ref_num": ref_num, "ref_text": doc})
+        resolved.sort(key=lambda x: x["ref_num"])
+        return resolved
+
     def search(
         self,
         query: str,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        include_citation_references: bool = True,
+        citation_max_items_per_result: int = 8,
     ) -> dict[str, Any]:
         candidate_k = int(self.retrieve_cfg.get("candidate_k", 30))
         evidence_per_item = int(self.retrieve_cfg.get("evidence_per_item", 2))
@@ -662,6 +797,16 @@ class AdvancedRAGRetriever(BaseRetriever):
             evidence = row["evidence"]
             top_match = evidence[0].text if evidence else ""
             top_meta = evidence[0].metadata if evidence else {}
+            resolved_citations: list[dict[str, Any]] = []
+            if include_citation_references and top_match:
+                cite_ids = extract_numeric_citation_ids(top_match)
+                resolved_citations = self._resolve_citations(
+                    item_key=row["item_key"],
+                    attachment_key=top_meta.get("attachment_key", ""),
+                    citation_ids=cite_ids,
+                )
+                if citation_max_items_per_result > 0:
+                    resolved_citations = resolved_citations[:citation_max_items_per_result]
             results.append(
                 {
                     "item_key": row["item_key"],
@@ -670,6 +815,7 @@ class AdvancedRAGRetriever(BaseRetriever):
                     "metadata": top_meta,
                     "zotero_item": hydrated.get(row["item_key"], {}),
                     "query": query,
+                    "resolved_citations": resolved_citations,
                     "evidence": [
                         {
                             "text": ev.text,
@@ -702,6 +848,7 @@ class AdvancedRAGRetriever(BaseRetriever):
         }
         return {
             "collection_info": self.chroma_client.get_collection_info(),
+            "refs_collection_info": self.refs_client.get_collection_info(),
             "retriever_mode": "advanced_rag",
             "advanced_rag": summary,
             "reranker_status": self._reranker_status,

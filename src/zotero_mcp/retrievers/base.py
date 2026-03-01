@@ -22,6 +22,7 @@ class BaseRetriever(ABC):
         query: str,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         ...
 

@@ -10,11 +10,23 @@ class FakeChromaClient:
         self.docs = []
         self.metas = []
         self.ids = []
+        self.raw_docs = []
+        self.raw_metas = []
+        self.raw_ids = []
+        self.ref_lookup: dict[str, str] = {}
+        self.persist_directory = "/tmp"
+        self.embedding_model = "default"
+        self.embedding_config = {}
+        self.collection = self
 
     def reset_collection(self):
         self.docs = []
         self.metas = []
         self.ids = []
+        self.raw_docs = []
+        self.raw_metas = []
+        self.raw_ids = []
+        self.ref_lookup = {}
 
     def get_existing_ids(self, ids):
         return set()
@@ -23,6 +35,13 @@ class FakeChromaClient:
         self.docs = list(documents)
         self.metas = list(metadatas)
         self.ids = list(ids)
+
+    def upsert_raw(self, documents, metadatas, ids):
+        self.raw_docs.extend(list(documents))
+        self.raw_metas.extend(list(metadatas))
+        self.raw_ids.extend(list(ids))
+        for doc_id, doc in zip(ids, documents):
+            self.ref_lookup[doc_id] = doc
 
     def search(self, query_texts, n_results, where=None):
         return {
@@ -38,6 +57,26 @@ class FakeChromaClient:
 
     def get_collection_info(self):
         return {"name": "zotero_rag_chunks_v1", "count": 3, "embedding_model": "default", "persist_directory": "/tmp"}
+
+    def get(self, ids=None, include=None, where=None, limit=None):
+        if where is not None and where.get("item_key"):
+            prefix = f"{where['item_key']}:"
+            candidates = [rid for rid in self.ref_lookup if rid.startswith(prefix)]
+            if limit is not None:
+                candidates = candidates[:limit]
+            return {
+                "ids": candidates,
+                "documents": [self.ref_lookup[i] for i in candidates],
+                "metadatas": [],
+            }
+        if ids is None:
+            return {"ids": [], "documents": [], "metadatas": []}
+        ret_ids = [doc_id for doc_id in ids if doc_id in self.ref_lookup]
+        return {
+            "ids": ret_ids,
+            "documents": [self.ref_lookup[i] for i in ret_ids],
+            "metadatas": [],
+        }
 
 
 class FakeEngine:
@@ -99,7 +138,7 @@ def _make_retriever(md_root, monkeypatch, reranker_enabled=False):
 
     engine = FakeEngine(md_root)
     client = FakeChromaClient()
-    return AdvancedRAGRetriever(engine=engine, chroma_client=client), client
+    return AdvancedRAGRetriever(engine=engine, chroma_client=client, refs_client=client), client
 
 
 # --- md_root default / warning tests ---
@@ -356,7 +395,7 @@ def _make_retriever_with_batch_cfg(md_root, monkeypatch, batch_size, sleep_secon
         "sleep_between_batches": sleep_seconds,
     }
     client = BatchTrackingChromaClient()
-    return AdvancedRAGRetriever(engine=engine, chroma_client=client), client
+    return AdvancedRAGRetriever(engine=engine, chroma_client=client, refs_client=client), client
 
 
 def test_ingest_flushes_in_multiple_batches_when_batch_size_exceeded(monkeypatch, tmp_path):
@@ -425,7 +464,7 @@ def _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg: dict):
     engine = FakeEngine(md_root)
     engine.semantic_config["advanced_rag"]["chunk"] = chunk_cfg
     client = FakeChromaClient()
-    return AdvancedRAGRetriever(engine=engine, chroma_client=client), client
+    return AdvancedRAGRetriever(engine=engine, chroma_client=client, refs_client=client), client
 
 
 def test_langchain_backend_metadata_written_to_chunks(monkeypatch, tmp_path):
@@ -666,3 +705,63 @@ def test_get_existing_ids_slices_large_id_lists(monkeypatch):
         assert sz <= CHROMA_GET_MAX_BATCH, (
             f"A single get call used {sz} ids, exceeding CHROMA_GET_MAX_BATCH={CHROMA_GET_MAX_BATCH}"
         )
+
+
+def test_ingest_stores_references_in_separate_collection(monkeypatch, tmp_path):
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    content = (
+        "# Intro\n\n"
+        + ("main body " * 1200)
+        + "\n\n## References\n\n"
+        + "[1] First ref doi:10.1000/1\n"
+        + "[2] Second ref doi:10.1000/2\n"
+    )
+    (att_dir / "a.md").write_text(content, encoding="utf-8")
+
+    retriever, client = _make_retriever(md_root, monkeypatch)
+    retriever.ingest_data()
+
+    assert any(rid.startswith("I1:ATT1:ref:") for rid in client.raw_ids)
+    assert "I1:ATT1:ref:1" in client.raw_ids
+    assert "I1:ATT1:ref:2" in client.raw_ids
+    assert all(":ref:" not in cid for cid in client.ids)
+
+
+def test_search_resolves_citations_with_partial_id_hits(monkeypatch, tmp_path):
+    retriever, client = _make_retriever(tmp_path / "md", monkeypatch)
+    client.ref_lookup = {
+        "I1:ATT1:ref:1": "Reference 1",
+        "I1:ATT1:ref:3": "Reference 3",
+    }
+    client.search = lambda query_texts, n_results, where=None: {
+        "ids": [["I1:ATT1:0"]],
+        "documents": [["evidence [1,2-3]"]],
+        "metadatas": [[{"item_key": "I1", "attachment_key": "ATT1", "chunk_kind": "content"}]],
+        "distances": [[0.1]],
+    }
+
+    result = retriever.search("q", limit=1)
+    citations = result["results"][0]["resolved_citations"]
+    assert [c["ref_num"] for c in citations] == [1, 3]
+    assert [c["ref_text"] for c in citations] == ["Reference 1", "Reference 3"]
+
+
+def test_search_meta_fallback_resolves_citations(monkeypatch, tmp_path):
+    retriever, client = _make_retriever(tmp_path / "md", monkeypatch)
+    client.ref_lookup = {
+        "I1:ATTX:ref:1": "Fallback Ref 1",
+    }
+    client.search = lambda query_texts, n_results, where=None: {
+        "ids": [["I1:meta:0"]],
+        "documents": [["meta evidence [1]"]],
+        "metadatas": [[{"item_key": "I1", "attachment_key": "meta", "chunk_kind": "meta"}]],
+        "distances": [[0.1]],
+    }
+
+    result = retriever.search("q", limit=1)
+    citations = result["results"][0]["resolved_citations"]
+    assert citations
+    assert citations[0]["ref_num"] == 1
+    assert citations[0]["ref_text"] == "Fallback Ref 1"

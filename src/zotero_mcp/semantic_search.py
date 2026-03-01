@@ -80,6 +80,17 @@ class ZoteroSemanticSearch:
                 "min_chunk_chars": 220,
                 "separators": ["\n\n", "\n", ". ", "; ", ", ", " "],
                 "headers": ["#", "##", "###", "####"],
+                "exclude_sections_enabled": True,
+                "exclude_sections": ["references", "acknowledgments", "appendix", "supplementary"],
+                "detect_reference_block_without_heading": True,
+                "reference_block_tail_ratio": 0.35,
+                "reference_block_window_lines": 20,
+                "reference_block_min_density": 0.45,
+                "reference_block_min_hits": 8,
+                "reference_block_min_doc_chars": 3000,
+                "merge_short_tail_chunks": True,
+                "short_tail_merge_threshold": 220,
+                "section_chunk_overrides": {},
                 # --- legacy fields kept for backward compat ---
                 "max_chars": 1600,
                 "overlap_chars": 200,
@@ -806,9 +817,10 @@ class ZoteroSemanticSearch:
         query: str,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Search using the configured retriever strategy."""
-        return self.retriever.search(query=query, limit=limit, filters=filters)
+        return self.retriever.search(query=query, limit=limit, filters=filters, **kwargs)
 
     def _legacy_search(self,
                        query: str,

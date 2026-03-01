@@ -29,7 +29,9 @@ class LegacyFulltextRetriever(BaseRetriever):
         query: str,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
+        del kwargs
         return self.engine._legacy_search(query=query, limit=limit, filters=filters)
 
     def get_database_status(self) -> dict[str, Any]:

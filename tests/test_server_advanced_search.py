@@ -1,4 +1,5 @@
 from zotero_mcp import server
+from zotero_mcp.server_tools import search_advanced_tools
 
 
 class DummyContext:
@@ -53,7 +54,9 @@ def test_advanced_search_filters_items(monkeypatch):
             },
         },
     ]
-    monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZotero(fake_items))
+    monkeypatch.setattr(
+        search_advanced_tools, "get_zotero_client", lambda: FakeZotero(fake_items)
+    )
 
     result = server.advanced_search(
         conditions=[
@@ -71,7 +74,7 @@ def test_advanced_search_filters_items(monkeypatch):
 
 
 def test_advanced_search_rejects_unknown_operation(monkeypatch):
-    monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZotero([]))
+    monkeypatch.setattr(search_advanced_tools, "get_zotero_client", lambda: FakeZotero([]))
 
     result = server.advanced_search(
         conditions=[{"field": "title", "operation": "regex", "value": ".*"}],

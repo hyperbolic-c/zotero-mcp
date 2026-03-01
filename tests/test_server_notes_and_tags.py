@@ -1,4 +1,5 @@
 from zotero_mcp import server
+from zotero_mcp.server_tools import notes_tools, search_admin_tools
 
 
 class DummyContext:
@@ -69,9 +70,9 @@ def test_search_notes_filters_annotation_blocks(monkeypatch):
     }
     fake_zot = FakeZoteroForNotes(notes, parent_items)
 
-    monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr(notes_tools, "get_zotero_client", lambda: fake_zot)
     monkeypatch.setattr(
-        server,
+        notes_tools,
         "_get_annotations",
         lambda **_kwargs: (
             "# Annotations\n\n"
@@ -100,7 +101,9 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
             },
         }
     ]
-    monkeypatch.setattr(server, "get_zotero_client", lambda: FakeZoteroForTags(items))
+    monkeypatch.setattr(
+        search_admin_tools, "get_zotero_client", lambda: FakeZoteroForTags(items)
+    )
 
     result = server.batch_update_tags(
         query="anything",

@@ -1,4 +1,5 @@
 from zotero_mcp import server
+from zotero_mcp.server_tools import notes_tools
 
 
 class DummyContext:
@@ -26,7 +27,7 @@ class FakeZotero:
 
 def test_create_note_includes_title_heading(monkeypatch):
     fake_zot = FakeZotero()
-    monkeypatch.setattr(server, "get_zotero_client", lambda: fake_zot)
+    monkeypatch.setattr(notes_tools, "get_zotero_client", lambda: fake_zot)
 
     result = server.create_note(
         item_key="ITEM0001",

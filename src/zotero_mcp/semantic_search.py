@@ -1,212 +1,173 @@
-"""
-Semantic search functionality for Zotero MCP.
+"""Semantic search functionality for Zotero MCP."""
 
-This module provides semantic search capabilities by integrating ChromaDB
-with the existing Zotero client to enable vector-based similarity search
-over research libraries.
-"""
+from __future__ import annotations
 
-import json
-import os
-import sys
 import logging
-from contextlib import contextmanager
 from typing import Any
 
-from .chroma_client import ChromaClient
+from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
+from .indexer import get_advanced_rag_defaults, load_semantic_config
 from .retrievers.factory import create_retriever
-from .indexer import ZoteroIndexer
 
 logger = logging.getLogger(__name__)
-
-
-@contextmanager
-def suppress_stdout():
-    """Context manager to suppress stdout temporarily."""
-    with open(os.devnull, 'w') as devnull:
-        old_stdout = sys.stdout
-        sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
 
 
 class ZoteroSemanticSearch:
     """Semantic search interface for Zotero libraries using ChromaDB."""
 
-    def __init__(self,
-                 chroma_client: ChromaClient | None = None,
-                 config_path: str | None = None,
-                 db_path: str | None = None):
-        """
-        Initialize semantic search.
-
-        Args:
-            chroma_client: Optional ChromaClient instance
-            config_path: Path to configuration file
-            db_path: Optional path to Zotero database (overrides config file)
-        """
+    def __init__(
+        self,
+        chroma_client: ChromaClient | None = None,
+        config_path: str | None = None,
+        db_path: str | None = None,
+    ):
         self.config_path = config_path
-        self.db_path = db_path  # CLI override for Zotero database path
+        self.db_path = db_path
         self.zotero_client = get_zotero_client()
-        self.semantic_config = self._load_semantic_config()
+        self.semantic_config = load_semantic_config(config_path)
         self.retriever_mode = self.semantic_config.get("retriever_mode", "legacy_metadata")
-        self.chroma_client = chroma_client
-        
-        # Initialize indexer for update management
-        self.indexer = ZoteroIndexer(
-            retriever_mode=self.retriever_mode,
-            config_path=self.config_path,
-            db_path=self.db_path,
-            semantic_config=self.semantic_config,
+        self.chroma_client = chroma_client or self._create_search_chroma_client()
+
+        self.retriever = create_retriever(
+            self.retriever_mode,
+            role="search",
             chroma_client=self.chroma_client,
-            zotero_client=self.zotero_client,
-            retriever_factory=create_retriever,
+            config={
+                "advanced_rag": self.semantic_config.get("advanced_rag", {}),
+                "config_path": self.config_path,
+                "db_path": self.db_path,
+            },
+            services={
+                "search_fn": self._legacy_search,
+                "status_fn": self._legacy_get_database_status,
+                "ingest_fn": None,
+                "get_item_by_key_fn": getattr(self.zotero_client, "item", None),
+                "parse_creators_fn": self._parse_creators_string,
+                "get_items_from_source_fn": None,
+            },
         )
-        
-        # Pull state from indexer for convenience and backward compatibility
-        self.update_config = self.indexer.update_config
-        self.retriever = self.indexer.retriever
-        
-        if self.chroma_client is None:
-            self.chroma_client = self.indexer.chroma_client
 
     @staticmethod
     def _get_advanced_rag_defaults() -> dict[str, Any]:
-        """Return the in-code defaults for the advanced_rag config section."""
-        return {
-            "md_root": "",
-            "chunk": {
-                # --- new LangChain-backed fields (M1) ---
-                "backend": "langchain",
-                "strategy": "markdown_recursive_v1",
-                "chunk_size": 1100,
-                "chunk_overlap": 180,
-                "min_chunk_chars": 220,
-                "separators": ["\n\n", "\n", ". ", "; ", ", ", " "],
-                "headers": ["#", "##", "###", "####"],
-                "exclude_sections_enabled": True,
-                "exclude_sections": ["references", "acknowledgments", "appendix", "supplementary"],
-                "detect_reference_block_without_heading": True,
-                "reference_block_tail_ratio": 0.35,
-                "reference_block_window_lines": 20,
-                "reference_block_min_density": 0.45,
-                "reference_block_min_hits": 8,
-                "reference_block_min_doc_chars": 3000,
-                "merge_short_tail_chunks": True,
-                "short_tail_merge_threshold": 220,
-                "section_chunk_overrides": {},
-                # --- legacy fields kept for backward compat ---
-                "max_chars": 1600,
-                "overlap_chars": 200,
-                "heading_first": True,
-            },
-            "ingest": {"strip_images": True},
-            "reranker": {
-                "enabled": True,
-                "backend": "flashrank",
-                "model_name": "ms-marco-MiniLM-L-12-v2",
-                "local_model_path": None,
-                "top_n": 8,
-            },
-            "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.70},
-        }
+        return get_advanced_rag_defaults()
 
-    def _load_semantic_config(self) -> dict[str, Any]:
-        """Load semantic search configuration with backward-compatible defaults."""
-        config: dict[str, Any] = {
-            "retriever_mode": "legacy_metadata",
-            "advanced_rag": self._get_advanced_rag_defaults(),
-        }
-        if self.config_path and os.path.exists(self.config_path):
-            try:
-                with open(self.config_path) as f:
-                    file_config = json.load(f).get("semantic_search", {})
-                    config.update(file_config)
-                    if "advanced_rag" in file_config:
-                        advanced_cfg = config["advanced_rag"]
-                        file_advanced = file_config.get("advanced_rag", {})
-                        for key in ("chunk", "ingest", "reranker", "retrieve"):
-                            if key in file_advanced and isinstance(file_advanced[key], dict):
-                                advanced_cfg[key].update(file_advanced[key])
-                        for key in ("md_root",):
-                            if key in file_advanced:
-                                advanced_cfg[key] = file_advanced[key]
-            except Exception as e:
-                logger.warning(f"Error loading semantic config: {e}")
-
-        # Backward-compat: map old max_chars/overlap_chars → chunk_size/chunk_overlap
-        chunk_cfg: dict[str, Any] = config.get("advanced_rag", {}).get("chunk", {})
-        migrated = False
-        if "max_chars" in chunk_cfg and "chunk_size" not in chunk_cfg:
-            chunk_cfg["chunk_size"] = chunk_cfg["max_chars"]
-            migrated = True
-        if "overlap_chars" in chunk_cfg and "chunk_overlap" not in chunk_cfg:
-            chunk_cfg["chunk_overlap"] = chunk_cfg["overlap_chars"]
-            migrated = True
-        if migrated:
-            logger.info(
-                "advanced_rag chunk config: migrated legacy fields "
-                "(max_chars→chunk_size, overlap_chars→chunk_overlap)"
+    def _create_search_chroma_client(self) -> ChromaClient:
+        if self.retriever_mode == "advanced_rag":
+            base_client = create_chroma_client(config_path=self.config_path)
+            return ChromaClient(
+                collection_name="zotero_rag_chunks_v1",
+                persist_directory=base_client.persist_directory,
+                embedding_model=base_client.embedding_model,
+                embedding_config=base_client.embedding_config,
             )
+        return create_chroma_client(config_path=self.config_path)
 
-        return config
-
-    def should_update_database(self) -> bool:
-        """Check if the database should be updated. Delegated to indexer."""
-        return self.indexer.should_update_database()
-
-    def update_database(self, **kwargs) -> dict[str, Any]:
-        """Update semantic database. Delegated to indexer."""
-        return self.indexer.update_database(**kwargs)
-
-    def search(self,
-               query: str,
-               limit: int = 10,
-               **kwargs: Any) -> list[dict[str, Any]]:
-        """
-        Perform semantic search for Zotero items.
-
-        Args:
-            query: Search query string
-            limit: Number of results to return
-            **kwargs: Strategy-specific search parameters
-
-        Returns:
-            List of search results with similarity scores
-        """
-        if not query or not query.strip():
+    @staticmethod
+    def _parse_creators_string(creators_str: str) -> list[dict[str, str]]:
+        if not creators_str:
             return []
 
-        logger.info(f"Performing semantic search for: '{query}' (limit: {limit})")
+        creators: list[dict[str, str]] = []
+        for creator in creators_str.split(";"):
+            creator = creator.strip()
+            if not creator:
+                continue
+            if "," in creator:
+                last, first = creator.split(",", 1)
+                creators.append(
+                    {
+                        "creatorType": "author",
+                        "firstName": first.strip(),
+                        "lastName": last.strip(),
+                    }
+                )
+            else:
+                creators.append({"creatorType": "author", "name": creator})
+        return creators
+
+    def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        if not chroma_results.get("ids") or not chroma_results["ids"][0]:
+            return enriched
+
+        ids = chroma_results["ids"][0]
+        distances = chroma_results.get("distances", [[]])[0]
+        documents = chroma_results.get("documents", [[]])[0]
+        metadatas = chroma_results.get("metadatas", [[]])[0]
+
+        for i, item_key in enumerate(ids):
+            try:
+                zotero_item = self.zotero_client.item(item_key)
+                enriched.append(
+                    {
+                        "item_key": item_key,
+                        "similarity_score": 1 - distances[i] if i < len(distances) else 0,
+                        "matched_text": documents[i] if i < len(documents) else "",
+                        "metadata": metadatas[i] if i < len(metadatas) else {},
+                        "zotero_item": zotero_item,
+                        "query": query,
+                    }
+                )
+            except Exception as exc:
+                enriched.append(
+                    {
+                        "item_key": item_key,
+                        "similarity_score": 1 - distances[i] if i < len(distances) else 0,
+                        "matched_text": documents[i] if i < len(documents) else "",
+                        "metadata": metadatas[i] if i < len(metadatas) else {},
+                        "query": query,
+                        "error": f"Could not fetch full item data: {exc}",
+                    }
+                )
+        return enriched
+
+    def _legacy_search(
+        self, query: str, limit: int = 10, filters: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            results = self.chroma_client.search(query_texts=[query], n_results=limit, where=filters)
+            enriched_results = self._enrich_search_results(results, query)
+            return {
+                "query": query,
+                "limit": limit,
+                "filters": filters,
+                "results": enriched_results,
+                "total_found": len(enriched_results),
+            }
+        except Exception as exc:
+            logger.error("Error performing semantic search: %s", exc)
+            return {
+                "query": query,
+                "limit": limit,
+                "filters": filters,
+                "results": [],
+                "total_found": 0,
+                "error": str(exc),
+            }
+
+    def _legacy_get_database_status(self) -> dict[str, Any]:
+        return {
+            "collection_info": self.chroma_client.get_collection_info(),
+            "retriever_mode": self.retriever_mode,
+        }
+
+    def search(self, query: str, limit: int = 10, **kwargs: Any) -> dict[str, Any]:
+        if not query or not query.strip():
+            return {"query": query, "limit": limit, "results": [], "total_found": 0}
+
+        logger.info("Performing semantic search for: '%s' (limit: %s)", query, limit)
         return self.retriever.search(query, limit=limit, **kwargs)
 
     def get_database_status(self) -> dict[str, Any]:
-        """Get the current status of the semantic database."""
         try:
             status = self.retriever.get_database_status()
-            status["update_config"] = self.indexer.update_config
-            status["should_update"] = self.indexer.should_update_database()
-            status["last_update"] = self.indexer.update_config.get("last_update")
             status["retriever_mode"] = status.get("retriever_mode", self.retriever_mode)
             return status
-        except Exception as e:
-            logger.error(f"Error getting database status: {e}")
-            return {"error": str(e)}
+        except Exception as exc:
+            logger.error("Error getting database status: %s", exc)
+            return {"error": str(exc)}
 
 
-def create_semantic_search(config_path: str | None = None,
-                          db_path: str | None = None) -> ZoteroSemanticSearch:
-    """
-    Helper function to create a ZoteroSemanticSearch instance.
-
-    Args:
-        config_path: Path to configuration file
-        db_path: Optional path to Zotero database
-
-    Returns:
-        ZoteroSemanticSearch instance
-    """
+def create_semantic_search(config_path: str | None = None, db_path: str | None = None) -> ZoteroSemanticSearch:
     return ZoteroSemanticSearch(config_path=config_path, db_path=db_path)

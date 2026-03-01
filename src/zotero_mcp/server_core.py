@@ -15,21 +15,20 @@ async def server_lifespan(server: FastMCP):
     background_task: asyncio.Task | None = None
 
     try:
-        from zotero_mcp.semantic_search import create_semantic_search
+        from zotero_mcp.indexer import create_indexer
 
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
 
         if config_path.exists():
-            search = create_semantic_search(str(config_path))
+            indexer = create_indexer(str(config_path))
 
-            if search.should_update_database():
+            if indexer.should_update_database():
                 sys.stderr.write("Auto-updating semantic search database...\\n")
 
                 async def background_update():
                     try:
-                        # Use indexer directly for auto-update
                         stats = await asyncio.to_thread(
-                            search.indexer.update_database, extract_fulltext=False
+                            indexer.update_database, extract_fulltext=False
                         )
                         sys.stderr.write(
                             f"Database update completed: {stats.get('processed_items', 0)} items processed\\n"

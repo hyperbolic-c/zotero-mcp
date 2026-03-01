@@ -323,10 +323,12 @@ def main():
         if config_path.exists():
             try:
                 from zotero_mcp.semantic_search import create_semantic_search
+                from zotero_mcp.indexer import create_indexer
 
                 # Get database status (similar to db-status command)
                 search = create_semantic_search(str(config_path))
                 status = search.get_database_status()
+                index_status = create_indexer(str(config_path)).get_update_status()
 
                 collection_info = status.get("collection_info", {})
 
@@ -340,11 +342,11 @@ def main():
                 if status.get("reranker_status"):
                     print(f"  Reranker: {status.get('reranker_status')}")
 
-                update_config = status.get("update_config", {})
+                update_config = index_status.get("update_config", {})
                 print(f"  Auto update: {update_config.get('auto_update', False)}")
                 print(f"  Update frequency: {update_config.get('update_frequency', 'manual')}")
                 print(f"  Last update: {update_config.get('last_update', 'Never')}")
-                print(f"  Should update: {status.get('should_update', False)}")
+                print(f"  Should update: {index_status.get('should_update', False)}")
 
                 if collection_info.get('error'):
                     print(f"  Error: {collection_info['error']}")
@@ -366,7 +368,7 @@ def main():
         # Setup Zotero environment variables
         setup_zotero_environment()
 
-        from zotero_mcp.semantic_search import create_semantic_search
+        from zotero_mcp.indexer import create_indexer
 
         # Determine config path
         config_path = args.config_path
@@ -385,13 +387,13 @@ def main():
             _save_zotero_db_path_to_config(config_path, db_path)
 
         try:
-            # Create semantic search instance with optional db_path override
-            search = create_semantic_search(str(config_path), db_path=db_path)
+            # Create indexer instance with optional db_path override
+            indexer = create_indexer(str(config_path), db_path=db_path)
 
             print("Starting database update...")
             if args.fulltext:
                 print("Note: --fulltext flag enabled. Will extract content from local database if available.")
-            stats = search.update_database(
+            stats = indexer.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
                 extract_fulltext=args.fulltext
@@ -424,6 +426,7 @@ def main():
         setup_zotero_environment()
 
         from zotero_mcp.semantic_search import create_semantic_search
+        from zotero_mcp.indexer import create_indexer
 
         # Determine config path
         config_path = args.config_path
@@ -438,6 +441,7 @@ def main():
 
             # Get database status
             status = search.get_database_status()
+            index_status = create_indexer(str(config_path)).get_update_status()
 
             print("=== Semantic Search Database Status ===")
 
@@ -450,12 +454,12 @@ def main():
             if status.get("reranker_status"):
                 print(f"Reranker: {status.get('reranker_status')}")
 
-            update_config = status.get("update_config", {})
+            update_config = index_status.get("update_config", {})
             print(f"\nUpdate configuration:")
             print(f"- Auto update: {update_config.get('auto_update', False)}")
             print(f"- Frequency: {update_config.get('update_frequency', 'manual')}")
             print(f"- Last update: {update_config.get('last_update', 'Never')}")
-            print(f"- Should update: {status.get('should_update', False)}")
+            print(f"- Should update: {index_status.get('should_update', False)}")
 
             if collection_info.get('error'):
                 print(f"\nError: {collection_info['error']}")

@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any
 
-from zotero_mcp.chroma_client import ChromaClient, create_chroma_client
+from zotero_mcp.chroma_client import ChromaClient
 
 from .advanced_rag import AdvancedRAGRetriever
 from .base import BaseRetriever
@@ -47,16 +47,48 @@ def _build_advanced_chroma_client(config_path: str | None) -> ChromaClient:
     )
 
 
-def create_retriever(mode: str, engine: Any) -> BaseRetriever:
+def create_retriever(
+    mode: str,
+    *,
+    role: str,
+    chroma_client: ChromaClient | None,
+    config: dict[str, Any],
+    services: dict[str, Any],
+) -> BaseRetriever:
     if mode == "legacy_metadata":
-        return LegacyMetadataRetriever(engine)
+        return LegacyMetadataRetriever(
+            ingest_fn=services.get("ingest_fn"),
+            search_fn=services.get("search_fn"),
+            status_fn=services.get("status_fn"),
+            chroma_client=chroma_client,
+        )
 
     if mode == "legacy_fulltext":
-        return LegacyFulltextRetriever(engine)
+        return LegacyFulltextRetriever(
+            ingest_fn=services.get("ingest_fn"),
+            search_fn=services.get("search_fn"),
+            status_fn=services.get("status_fn"),
+            chroma_client=chroma_client,
+        )
 
     if mode == "advanced_rag":
-        chroma_client = engine.chroma_client or _build_advanced_chroma_client(engine.config_path)
-        return AdvancedRAGRetriever(engine=engine, chroma_client=chroma_client)
+        active_chroma = chroma_client or _build_advanced_chroma_client(config.get("config_path"))
+        return AdvancedRAGRetriever(
+            chroma_client=active_chroma,
+            refs_client=services.get("refs_client"),
+            config=config.get("advanced_rag", {}),
+            db_path=config.get("db_path"),
+            config_path=config.get("config_path"),
+            get_items_from_source_fn=services.get("get_items_from_source_fn"),
+            parse_creators_fn=services.get("parse_creators_fn"),
+            get_item_by_key_fn=services.get("get_item_by_key_fn"),
+            role=role,
+        )
 
     logger.warning("Unknown retriever mode '%s', falling back to legacy_metadata", mode)
-    return LegacyMetadataRetriever(engine)
+    return LegacyMetadataRetriever(
+        ingest_fn=services.get("ingest_fn"),
+        search_fn=services.get("search_fn"),
+        status_fn=services.get("status_fn"),
+        chroma_client=chroma_client,
+    )

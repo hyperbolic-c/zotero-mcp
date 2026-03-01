@@ -107,6 +107,19 @@ class FakeEngine:
         return {"data": {"key": item_key, "title": f"Title {item_key}", "creators": []}}
 
 
+def _build_advanced_retriever(engine: FakeEngine, client: FakeChromaClient, refs_client=None):
+    return AdvancedRAGRetriever(
+        chroma_client=client,
+        refs_client=refs_client,
+        config=engine.semantic_config["advanced_rag"],
+        db_path=engine.db_path,
+        config_path=engine.config_path,
+        get_items_from_source_fn=engine._get_items_from_source,
+        parse_creators_fn=engine._parse_creators_string,
+        get_item_by_key_fn=engine.item,
+    )
+
+
 class FakeLocalItem:
     def __init__(self, key, item_id):
         self.key = key
@@ -148,7 +161,7 @@ def _make_retriever(md_root, monkeypatch, reranker_enabled=False):
 
     engine = FakeEngine(md_root)
     client = FakeChromaClient()
-    return AdvancedRAGRetriever(engine=engine, chroma_client=client, refs_client=client), client
+    return _build_advanced_retriever(engine, client, refs_client=client), client
 
 
 # --- md_root default / warning tests ---
@@ -172,7 +185,7 @@ def test_ingest_warns_when_md_root_empty(monkeypatch, caplog, tmp_path):
 
     engine = FakeEngine("")  # empty md_root
     client = FakeChromaClient()
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever = _build_advanced_retriever(engine, client)
 
     with caplog.at_level(logging.WARNING, logger="zotero_mcp.retrievers.advanced_rag"):
         retriever.ingest_data()
@@ -212,7 +225,7 @@ def test_ingest_logs_item_errors(monkeypatch, tmp_path, caplog):
     client = FakeChromaClient()
 
     # Force _build_item_chunks to raise on item I1
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever = _build_advanced_retriever(engine, client)
     original_build = retriever._build_item_chunks
 
     def _broken_build(item, attachment_keys):
@@ -252,7 +265,7 @@ def test_reranker_init_error_distinguishes_import_vs_runtime(monkeypatch):
         "flashrank",
         None,  # makes `import flashrank` raise ImportError
     )
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever = _build_advanced_retriever(engine, client)
     assert retriever._reranker_status == "degraded:package_missing"
 
     # Simulate runtime error (e.g. bad model name, ONNX fail) by patching Ranker
@@ -266,7 +279,7 @@ def test_reranker_init_error_distinguishes_import_vs_runtime(monkeypatch):
     fake_flashrank.Ranker = BadRanker
     monkeypatch.setitem(__import__("sys").modules, "flashrank", fake_flashrank)
 
-    retriever2 = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever2 = _build_advanced_retriever(engine, client)
     assert retriever2._reranker_status.startswith("degraded:init_error:"), (
         f"Expected 'degraded:init_error:...', got: {retriever2._reranker_status!r}"
     )
@@ -311,7 +324,7 @@ def test_rerank_passes_top_n_to_ranker(monkeypatch, tmp_path):
     monkeypatch.setitem(__import__("sys").modules, "flashrank", fake_flashrank)
 
     client = FakeChromaClient()
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever = _build_advanced_retriever(engine, client)
 
     # Build some fake candidates
     candidates = [
@@ -337,7 +350,7 @@ def test_semantic_search_does_not_expose_delete_item(monkeypatch):
         def get_database_status(self): return {"collection_info": {}}
 
     monkeypatch.setattr(ss, "get_zotero_client", lambda: object())
-    monkeypatch.setattr(ss, "create_retriever", lambda mode, engine: StubRetriever())
+    monkeypatch.setattr(ss, "create_retriever", lambda mode, **kwargs: StubRetriever())
 
     search = ss.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
     assert not hasattr(search, "delete_item")
@@ -357,7 +370,7 @@ def test_advanced_rag_ingest_and_item_level_search(monkeypatch, tmp_path):
 
     engine = FakeEngine(md_root)
     client = FakeChromaClient()
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever = _build_advanced_retriever(engine, client)
 
     stats = retriever.ingest_data(force_rebuild=False)
     assert stats["total_items"] == 2
@@ -402,7 +415,7 @@ def _make_retriever_with_batch_cfg(md_root, monkeypatch, batch_size, sleep_secon
         "sleep_between_batches": sleep_seconds,
     }
     client = BatchTrackingChromaClient()
-    return AdvancedRAGRetriever(engine=engine, chroma_client=client, refs_client=client), client
+    return _build_advanced_retriever(engine, client, refs_client=client), client
 
 
 def test_ingest_flushes_in_multiple_batches_when_batch_size_exceeded(monkeypatch, tmp_path):
@@ -471,7 +484,7 @@ def _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg: dict):
     engine = FakeEngine(md_root)
     engine.semantic_config["advanced_rag"]["chunk"] = chunk_cfg
     client = FakeChromaClient()
-    return AdvancedRAGRetriever(engine=engine, chroma_client=client, refs_client=client), client
+    return _build_advanced_retriever(engine, client, refs_client=client), client
 
 
 def test_langchain_backend_metadata_written_to_chunks(monkeypatch, tmp_path):
@@ -624,7 +637,7 @@ def test_flush_batch_splits_oversized_single_item_batch(monkeypatch, tmp_path):
 
     client = LimitEnforcingChromaClient(max_per_call=tiny_limit)
     engine = FakeEngine(str(tmp_path))
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=client)
+    retriever = _build_advanced_retriever(engine, client)
 
     stats = {"added_chunks": 0, "updated_chunks": 0}
     # Must not raise, even though len(ids) > tiny_limit
@@ -814,7 +827,7 @@ def test_force_rebuild_resets_both_collections(monkeypatch, tmp_path):
     chunks_client.reset_collection = _track_chunks_reset
     refs_client.reset_collection = _track_refs_reset
 
-    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=chunks_client, refs_client=refs_client)
+    retriever = _build_advanced_retriever(engine, chunks_client, refs_client=refs_client)
 
     # Without rebuild, neither reset should be called
     retriever.ingest_data(force_rebuild=False)

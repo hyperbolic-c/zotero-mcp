@@ -62,11 +62,28 @@ class CandidateChunk:
 
 
 class AdvancedRAGRetriever(BaseRetriever):
-    def __init__(self, engine: Any, chroma_client: ChromaClient, refs_client: ChromaClient | None = None):
-        self.engine = engine
+    def __init__(
+        self,
+        *,
+        chroma_client: ChromaClient,
+        config: dict[str, Any] | None = None,
+        refs_client: ChromaClient | None = None,
+        db_path: str | None = None,
+        config_path: str | None = None,
+        get_items_from_source_fn: Any | None = None,
+        parse_creators_fn: Any | None = None,
+        get_item_by_key_fn: Any | None = None,
+        role: str = "search",
+    ):
         self.chroma_client = chroma_client
         self.refs_client = refs_client
-        self.config = engine.semantic_config.get("advanced_rag", {})
+        self.config = config or {}
+        self.db_path = db_path
+        self.config_path = config_path
+        self.get_items_from_source_fn = get_items_from_source_fn
+        self.parse_creators_fn = parse_creators_fn or self._default_parse_creators_string
+        self.get_item_by_key_fn = get_item_by_key_fn
+        self.role = role
         self.chunk_cfg = self.config.get("chunk", {})
         self.retrieve_cfg = self.config.get("retrieve", {})
         self.ingest_cfg = self.config.get("ingest", {})
@@ -85,6 +102,28 @@ class AdvancedRAGRetriever(BaseRetriever):
             except Exception as exc:
                 logger.warning("Unable to initialize dedicated refs collection, using primary client: %s", exc)
                 self.refs_client = self.chroma_client
+
+    @staticmethod
+    def _default_parse_creators_string(creators_str: str) -> list[dict[str, str]]:
+        if not creators_str:
+            return []
+        creators: list[dict[str, str]] = []
+        for creator in creators_str.split(";"):
+            creator = creator.strip()
+            if not creator:
+                continue
+            if "," in creator:
+                last, first = creator.split(",", 1)
+                creators.append(
+                    {
+                        "creatorType": "author",
+                        "firstName": first.strip(),
+                        "lastName": last.strip(),
+                    }
+                )
+            else:
+                creators.append({"creatorType": "author", "name": creator})
+        return creators
 
     def _init_reranker(self) -> str:
         if not self.reranker_cfg.get("enabled", True):
@@ -239,7 +278,7 @@ class AdvancedRAGRetriever(BaseRetriever):
             return {}
         item_to_attachments: dict[str, list[str]] = {}
         try:
-            with LocalZoteroReader(db_path=self.engine.db_path) as reader:
+            with LocalZoteroReader(db_path=self.db_path) as reader:
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
                 for local_item in local_items:
                     keys = [
@@ -263,8 +302,8 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         Returns:
             A ``(api_items, attachment_map)`` tuple where *api_items* is a list
-            of dicts in the same format produced by
-            ``engine._get_items_from_source()`` and *attachment_map* maps each
+            of dicts in the same format produced by the legacy source loader,
+            and *attachment_map* maps each
             parent item key to a list of attachment keys.
 
         Raises:
@@ -273,9 +312,9 @@ class AdvancedRAGRetriever(BaseRetriever):
             fall back to the API path).
         """
         # --- resolve db_path / pdf_max_pages from config (same as legacy) ---
-        zotero_db_path = self.engine.db_path
+        zotero_db_path = self.db_path
         pdf_max_pages = None
-        config_path = self.engine.config_path
+        config_path = self.config_path
         try:
             if config_path and os.path.exists(config_path):
                 with open(config_path) as _f:
@@ -361,7 +400,7 @@ class AdvancedRAGRetriever(BaseRetriever):
                         "dateAdded": item.date_added,
                         "dateModified": item.date_modified,
                         "creators": (
-                            self.engine._parse_creators_string(item.creators)
+                            self.parse_creators_fn(item.creators)
                             if item.creators
                             else []
                         ),
@@ -458,7 +497,9 @@ class AdvancedRAGRetriever(BaseRetriever):
                 "Local Zotero DB unavailable (%s), falling back to HTTP API",
                 exc,
             )
-            items = self.engine._get_items_from_source(limit=limit, extract_fulltext=False)
+            if self.get_items_from_source_fn is None:
+                raise
+            items = self.get_items_from_source_fn(limit=limit, extract_fulltext=False)
             attachment_map = self._collect_attachment_map(limit=limit)
 
         stats["total_items"] = len(items)
@@ -590,7 +631,7 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         if is_local_mode():
             try:
-                with LocalZoteroReader(db_path=self.engine.db_path) as reader:
+                with LocalZoteroReader(db_path=self.db_path) as reader:
                     local_items = reader.get_items_with_text(include_fulltext=False)
                 local_by_key = {item.key: item for item in local_items}
                 for item_key in item_keys:
@@ -604,7 +645,7 @@ class AdvancedRAGRetriever(BaseRetriever):
                             "title": local_item.title or "",
                             "abstractNote": local_item.abstract or "",
                             "date": "",
-                            "creators": self.engine._parse_creators_string(local_item.creators or ""),
+                            "creators": self.parse_creators_fn(local_item.creators or ""),
                         }
                     }
                 return hydrated
@@ -613,7 +654,9 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         for item_key in item_keys:
             try:
-                hydrated[item_key] = self.engine.zotero_client.item(item_key)
+                if self.get_item_by_key_fn is None:
+                    continue
+                hydrated[item_key] = self.get_item_by_key_fn(item_key)
             except Exception:
                 continue
 

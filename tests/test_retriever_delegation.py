@@ -8,7 +8,7 @@ if sys.version_info >= (3, 14):
         allow_module_level=True,
     )
 
-from zotero_mcp import semantic_search
+from zotero_mcp import indexer, semantic_search
 
 
 class DummyRetriever:
@@ -19,8 +19,8 @@ class DummyRetriever:
         self.ingest_called = (force_rebuild, limit, extract_fulltext)
         return {"ok": True}
 
-    def search(self, query, limit=10, filters=None):
-        return {"query": query, "limit": limit, "filters": filters, "results": []}
+    def search(self, query, limit=10, filters=None, **kwargs):
+        return {"query": query, "limit": limit, "filters": filters, "kwargs": kwargs, "results": []}
 
     def get_database_status(self):
         return {"collection_info": {"name": "x", "count": 0}}
@@ -34,17 +34,17 @@ class FakeChromaClient:
         return None
 
 
-def test_semantic_search_delegates_to_retriever(monkeypatch):
+def test_create_retriever_role_search(monkeypatch):
     retriever = DummyRetriever()
 
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
-    monkeypatch.setattr(semantic_search, "create_retriever", lambda mode, engine: retriever)
+    monkeypatch.setattr(
+        semantic_search,
+        "create_retriever",
+        lambda mode, **kwargs: retriever,
+    )
 
     search = semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
-
-    stats = search.update_database(force_full_rebuild=True, limit=5, extract_fulltext=True)
-    assert stats["ok"] is True
-    assert retriever.ingest_called == (True, 5, True)
 
     results = search.search("hello", limit=3, filters={"item_type": "note"})
     assert results["query"] == "hello"
@@ -53,3 +53,18 @@ def test_semantic_search_delegates_to_retriever(monkeypatch):
     status = search.get_database_status()
     assert status["collection_info"]["name"] == "x"
     assert status["retriever_mode"] == "legacy_metadata"
+
+
+def test_create_retriever_role_ingest(monkeypatch):
+    retriever = DummyRetriever()
+
+    monkeypatch.setattr(indexer, "get_zotero_client", lambda: object())
+
+    idx = indexer.ZoteroIndexer(
+        chroma_client=FakeChromaClient(),
+        retriever_factory=lambda mode, **kwargs: retriever,
+    )
+    stats = idx.update_database(force_full_rebuild=True, limit=5, extract_fulltext=True)
+
+    assert stats["ok"] is True
+    assert retriever.ingest_called == (True, 5, True)

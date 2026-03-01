@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .chroma_client import ChromaClient
+from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .utils import format_creators
 from .utils import is_local_mode
@@ -20,6 +20,109 @@ from .local_db import LocalZoteroReader
 from .retrievers.factory import create_retriever
 
 logger = logging.getLogger(__name__)
+
+
+def get_advanced_rag_defaults() -> dict[str, Any]:
+    return {
+        "md_root": "",
+        "chunk": {
+            "backend": "langchain",
+            "strategy": "markdown_recursive_v1",
+            "chunk_size": 1100,
+            "chunk_overlap": 180,
+            "min_chunk_chars": 220,
+            "separators": ["\n\n", "\n", ". ", "; ", ", ", " "],
+            "headers": ["#", "##", "###", "####"],
+            "exclude_sections_enabled": True,
+            "exclude_sections": ["references", "acknowledgments", "appendix", "supplementary"],
+            "detect_reference_block_without_heading": True,
+            "reference_block_tail_ratio": 0.35,
+            "reference_block_window_lines": 20,
+            "reference_block_min_density": 0.45,
+            "reference_block_min_hits": 8,
+            "reference_block_min_doc_chars": 3000,
+            "merge_short_tail_chunks": True,
+            "short_tail_merge_threshold": 220,
+            "section_chunk_overrides": {},
+            "max_chars": 1600,
+            "overlap_chars": 200,
+            "heading_first": True,
+        },
+        "ingest": {"strip_images": True},
+        "reranker": {
+            "enabled": True,
+            "backend": "flashrank",
+            "model_name": "ms-marco-MiniLM-L-12-v2",
+            "local_model_path": None,
+            "top_n": 8,
+        },
+        "retrieve": {"candidate_k": 30, "evidence_per_item": 2, "meta_weight": 0.70},
+    }
+
+
+def load_semantic_config(config_path: str | None = None) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "retriever_mode": "legacy_metadata",
+        "advanced_rag": get_advanced_rag_defaults(),
+    }
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                file_config = json.load(f).get("semantic_search", {})
+            config.update(file_config)
+            if "advanced_rag" in file_config:
+                advanced_cfg = config["advanced_rag"]
+                file_advanced = file_config.get("advanced_rag", {})
+                for key in ("chunk", "ingest", "reranker", "retrieve"):
+                    if key in file_advanced and isinstance(file_advanced[key], dict):
+                        advanced_cfg[key].update(file_advanced[key])
+                if "md_root" in file_advanced:
+                    advanced_cfg["md_root"] = file_advanced["md_root"]
+        except Exception as exc:
+            logger.warning("Error loading semantic config: %s", exc)
+
+    chunk_cfg: dict[str, Any] = config.get("advanced_rag", {}).get("chunk", {})
+    migrated = False
+    if "max_chars" in chunk_cfg and "chunk_size" not in chunk_cfg:
+        chunk_cfg["chunk_size"] = chunk_cfg["max_chars"]
+        migrated = True
+    if "overlap_chars" in chunk_cfg and "chunk_overlap" not in chunk_cfg:
+        chunk_cfg["chunk_overlap"] = chunk_cfg["overlap_chars"]
+        migrated = True
+    if migrated:
+        logger.info(
+            "advanced_rag chunk config: migrated legacy fields "
+            "(max_chars→chunk_size, overlap_chars→chunk_overlap)"
+        )
+
+    return config
+
+
+def _create_index_chroma_client(retriever_mode: str, config_path: str | None) -> ChromaClient:
+    if retriever_mode == "advanced_rag":
+        base_client = create_chroma_client(config_path=config_path)
+        return ChromaClient(
+            collection_name="zotero_rag_chunks_v1",
+            persist_directory=base_client.persist_directory,
+            embedding_model=base_client.embedding_model,
+            embedding_config=base_client.embedding_config,
+        )
+    return create_chroma_client(config_path=config_path)
+
+
+def create_indexer(config_path: str | None = None, db_path: str | None = None) -> "ZoteroIndexer":
+    semantic_config = load_semantic_config(config_path)
+    retriever_mode = semantic_config.get("retriever_mode", "legacy_metadata")
+    chroma_client = _create_index_chroma_client(retriever_mode, config_path)
+    return ZoteroIndexer(
+        retriever_mode=retriever_mode,
+        config_path=config_path,
+        db_path=db_path,
+        semantic_config=semantic_config,
+        chroma_client=chroma_client,
+        zotero_client=get_zotero_client(),
+        retriever_factory=create_retriever,
+    )
 
 class ZoteroIndexer:
     """Handles synchronization of Zotero data to ChromaDB."""
@@ -54,8 +157,25 @@ class ZoteroIndexer:
         # Initialize update config
         self.update_config = self._load_update_config()
         
-        # Create retriever for ingestion/search strategy operations.
-        self.retriever = retriever_factory(self.retriever_mode, self)
+        # Create retriever for ingestion strategy operations.
+        self.retriever = retriever_factory(
+            self.retriever_mode,
+            role="ingest",
+            chroma_client=self.chroma_client,
+            config={
+                "advanced_rag": self.semantic_config.get("advanced_rag", {}),
+                "config_path": self.config_path,
+                "db_path": self.db_path,
+            },
+            services={
+                "ingest_fn": self._legacy_update_database,
+                "search_fn": None,
+                "status_fn": None,
+                "get_items_from_source_fn": self._get_items_from_source,
+                "parse_creators_fn": self._parse_creators_string,
+                "get_item_by_key_fn": getattr(self.zotero_client, "item", None),
+            },
+        )
         
         if self.chroma_client is None:
             self.chroma_client = getattr(self.retriever, "chroma_client", None)
@@ -139,6 +259,14 @@ class ZoteroIndexer:
                 return False
 
         return False
+
+    def get_update_status(self) -> dict[str, Any]:
+        return {
+            "update_config": self.update_config,
+            "should_update": self.should_update_database(),
+            "last_update": self.update_config.get("last_update"),
+            "retriever_mode": self.retriever_mode,
+        }
 
     def update_database(
         self,
@@ -439,85 +567,3 @@ class ZoteroIndexer:
             stats["duration"] = str(end_time - start_time)
             stats["error"] = str(e)
             return stats
-
-    def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
-        """Enrich ChromaDB results with Zotero item payloads."""
-        enriched: list[dict[str, Any]] = []
-        if not chroma_results.get("ids") or not chroma_results["ids"][0]:
-            return enriched
-
-        ids = chroma_results["ids"][0]
-        distances = chroma_results.get("distances", [[]])[0]
-        documents = chroma_results.get("documents", [[]])[0]
-        metadatas = chroma_results.get("metadatas", [[]])[0]
-
-        for i, item_key in enumerate(ids):
-            try:
-                zotero_item = self.zotero_client.item(item_key)
-                enriched.append(
-                    {
-                        "item_key": item_key,
-                        "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                        "matched_text": documents[i] if i < len(documents) else "",
-                        "metadata": metadatas[i] if i < len(metadatas) else {},
-                        "zotero_item": zotero_item,
-                        "query": query,
-                    }
-                )
-            except Exception as e:
-                enriched.append(
-                    {
-                        "item_key": item_key,
-                        "similarity_score": 1 - distances[i] if i < len(distances) else 0,
-                        "matched_text": documents[i] if i < len(documents) else "",
-                        "metadata": metadatas[i] if i < len(metadatas) else {},
-                        "query": query,
-                        "error": f"Could not fetch full item data: {e}",
-                    }
-                )
-        return enriched
-
-    def _legacy_search(
-        self, query: str, limit: int = 10, filters: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        """Legacy search path for legacy retrievers."""
-        try:
-            if self.chroma_client is None:
-                return {"query": query, "limit": limit, "filters": filters, "results": [], "total_found": 0, "error": "Chroma client is not initialized"}
-            results = self.chroma_client.search(query_texts=[query], n_results=limit, where=filters)
-            enriched_results = self._enrich_search_results(results, query)
-            return {
-                "query": query,
-                "limit": limit,
-                "filters": filters,
-                "results": enriched_results,
-                "total_found": len(enriched_results),
-            }
-        except Exception as e:
-            logger.error(f"Error performing semantic search: {e}")
-            return {
-                "query": query,
-                "limit": limit,
-                "filters": filters,
-                "results": [],
-                "total_found": 0,
-                "error": str(e),
-            }
-
-    def _legacy_get_database_status(self) -> dict[str, Any]:
-        """Legacy status payload for legacy retrievers."""
-        if self.chroma_client is None:
-            return {
-                "collection_info": {"error": "Chroma client is not initialized"},
-                "update_config": self.update_config,
-                "should_update": self.should_update_database(),
-                "last_update": self.update_config.get("last_update"),
-                "retriever_mode": self.retriever_mode,
-            }
-        return {
-            "collection_info": self.chroma_client.get_collection_info(),
-            "update_config": self.update_config,
-            "should_update": self.should_update_database(),
-            "last_update": self.update_config.get("last_update"),
-            "retriever_mode": self.retriever_mode,
-        }

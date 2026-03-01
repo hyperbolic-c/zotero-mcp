@@ -37,7 +37,7 @@ def test_process_item_batch_tracks_added_vs_updated(monkeypatch):
     indexer = ZoteroIndexer(
         chroma_client=FakeChromaClient(),
         zotero_client=object(),
-        retriever_factory=lambda _mode, _engine: DummyRetriever(),
+        retriever_factory=lambda _mode, **_kwargs: DummyRetriever(),
     )
 
     items = [

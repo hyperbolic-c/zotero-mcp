@@ -196,19 +196,14 @@ def update_search_database(
     try:
         ctx.info("Starting semantic search database update...")
 
-        # Import semantic search and indexer modules
-        from zotero_mcp.semantic_search import ZoteroSemanticSearch
-        from zotero_mcp.indexer import ZoteroIndexer
+        # Import indexer factory
+        from zotero_mcp.indexer import create_indexer
         from pathlib import Path
 
         # Determine config path
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
 
-        # Create semantic search instance to get configuration
-        search = ZoteroSemanticSearch(config_path=str(config_path))
-        
-        # Create indexer instance (can also use search.indexer if preferred)
-        indexer = search.indexer
+        indexer = create_indexer(str(config_path))
 
         # Perform update with no fulltext extraction (for speed)
         stats = indexer.update_database(
@@ -261,8 +256,9 @@ def get_search_database_status(*, ctx: Context) -> str:
     try:
         ctx.info("Getting semantic search database status...")
 
-        # Import semantic search module
+        # Import semantic search and indexer factories
         from zotero_mcp.semantic_search import create_semantic_search
+        from zotero_mcp.indexer import create_indexer
         from pathlib import Path
 
         # Determine config path
@@ -271,8 +267,8 @@ def get_search_database_status(*, ctx: Context) -> str:
         # Create semantic search instance
         search = create_semantic_search(str(config_path))
 
-        # Get status
         status = search.get_database_status()
+        index_status = create_indexer(str(config_path)).get_update_status()
 
         # Format results
         output = ["# Semantic Search Database Status", ""]
@@ -301,12 +297,12 @@ def get_search_database_status(*, ctx: Context) -> str:
 
         output.append("")
 
-        update_config = status.get("update_config", {})
+        update_config = index_status.get("update_config", {})
         output.append("## Update Configuration")
         output.append(f"**Auto Update:** {update_config.get('auto_update', False)}")
         output.append(f"**Frequency:** {update_config.get('update_frequency', 'manual')}")
         output.append(f"**Last Update:** {update_config.get('last_update', 'Never')}")
-        output.append(f"**Should Update Now:** {status.get('should_update', False)}")
+        output.append(f"**Should Update Now:** {index_status.get('should_update', False)}")
 
         if update_config.get('update_days'):
             output.append(f"**Update Interval:** Every {update_config['update_days']} days")

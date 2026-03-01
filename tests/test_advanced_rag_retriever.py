@@ -91,6 +91,7 @@ class FakeEngine:
             }
         }
         self.db_path = None
+        self.config_path = None
         self.zotero_client = self
 
     def _get_items_from_source(self, limit=None, extract_fulltext=False):
@@ -110,6 +111,15 @@ class FakeLocalItem:
     def __init__(self, key, item_id):
         self.key = key
         self.item_id = item_id
+        self.item_type = "journalArticle"
+        self.title = f"Title {key}"
+        self.abstract = ""
+        self.extra = ""
+        self.creators = ""
+        self.notes = ""
+        self.doi = None
+        self.date_added = "2024-01-01T00:00:00Z"
+        self.date_modified = "2024-01-01T00:00:00Z"
 
 
 class FakeReader:
@@ -765,3 +775,56 @@ def test_search_meta_fallback_resolves_citations(monkeypatch, tmp_path):
     assert citations
     assert citations[0]["ref_num"] == 1
     assert citations[0]["ref_text"] == "Fallback Ref 1"
+
+
+def test_force_rebuild_resets_both_collections(monkeypatch, tmp_path):
+    """force_rebuild=True must call reset_collection on both chunks and refs clients."""
+    md_root = tmp_path / "md"
+    att_dir = md_root / "ATT1"
+    att_dir.mkdir(parents=True)
+    content = (
+        "# Intro\n\n"
+        + ("main body " * 1200)
+        + "\n\n## References\n\n"
+        + "[1] First ref doi:10.1000/1\n"
+        + "[2] Second ref doi:10.1000/2\n"
+    )
+    (att_dir / "a.md").write_text(content, encoding="utf-8")
+
+    from zotero_mcp.retrievers import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
+
+    engine = FakeEngine(md_root)
+    chunks_client = FakeChromaClient()
+    refs_client = FakeChromaClient()
+
+    # Track reset calls independently
+    chunks_resets: list[int] = []
+    refs_resets: list[int] = []
+    _orig_chunks_reset = chunks_client.reset_collection
+    _orig_refs_reset = refs_client.reset_collection
+
+    def _track_chunks_reset():
+        chunks_resets.append(1)
+        _orig_chunks_reset()
+
+    def _track_refs_reset():
+        refs_resets.append(1)
+        _orig_refs_reset()
+
+    chunks_client.reset_collection = _track_chunks_reset
+    refs_client.reset_collection = _track_refs_reset
+
+    retriever = AdvancedRAGRetriever(engine=engine, chroma_client=chunks_client, refs_client=refs_client)
+
+    # Without rebuild, neither reset should be called
+    retriever.ingest_data(force_rebuild=False)
+    assert len(chunks_resets) == 0
+    assert len(refs_resets) == 0
+
+    # With force_rebuild, both must be reset
+    retriever.ingest_data(force_rebuild=True)
+    assert len(chunks_resets) == 1, "Expected chunks collection to be reset on force_rebuild"
+    assert len(refs_resets) == 1, "Expected refs collection to be reset on force_rebuild"

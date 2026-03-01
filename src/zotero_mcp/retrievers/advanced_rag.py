@@ -4,7 +4,6 @@ import glob
 import json
 import logging
 import os
-import re
 import sys
 import time
 from dataclasses import dataclass
@@ -144,42 +143,6 @@ class AdvancedRAGRetriever(BaseRetriever):
         if not self.ingest_cfg.get("strip_images", True):
             return text
         return "\n".join(line for line in text.splitlines() if not line.strip().startswith("!["))
-
-    def _split_sections(self, text: str) -> list[tuple[str, str]]:
-        sections: list[tuple[str, str]] = []
-        current_title = ""
-        current_lines: list[str] = []
-        for line in text.splitlines():
-            if re.match(r"^#{1,3}\s+", line.strip()):
-                if current_lines:
-                    sections.append((current_title, "\n".join(current_lines).strip()))
-                    current_lines = []
-                current_title = re.sub(r"^#{1,3}\s+", "", line.strip())
-                continue
-            current_lines.append(line)
-        if current_lines:
-            sections.append((current_title, "\n".join(current_lines).strip()))
-        return [sec for sec in sections if sec[1]]
-
-    def _chunk_text(self, text: str) -> list[str]:
-        max_chars = int(self.chunk_cfg.get("max_chars", 1600))
-        overlap_chars = int(self.chunk_cfg.get("overlap_chars", 200))
-        min_chunk_chars = int(self.chunk_cfg.get("min_chunk_chars", 120))
-        if len(text) <= max_chars:
-            return [text] if len(text) >= min_chunk_chars else []
-
-        chunks: list[str] = []
-        start = 0
-        text_len = len(text)
-        while start < text_len:
-            end = min(start + max_chars, text_len)
-            chunk = text[start:end].strip()
-            if len(chunk) >= min_chunk_chars:
-                chunks.append(chunk)
-            if end >= text_len:
-                break
-            start = max(0, end - overlap_chars)
-        return chunks
 
     def _build_item_chunks(
         self,

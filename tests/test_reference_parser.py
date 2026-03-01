@@ -66,6 +66,40 @@ def test_extract_numeric_citation_skips_large_range_with_debug_log(caplog):
     assert any("Skipping oversized citation range" in r.message for r in caplog.records)
 
 
+def test_headless_dual_gate_detection_abbreviated_journal_no_doi():
+    """Dual-gate must fire for biology-style refs with abbreviated journal names but no DOI.
+
+    This specifically tests that _BIB_TOKEN_RE matches 'Nat.', 'Adv.', 'et al.'
+    even without a trailing word boundary after the period.
+    """
+    body = ["intro line " + ("x" * 80) for _ in range(40)]
+    refs = [
+        f"[{i}] Author et al. Nat. Commun. vol. {i}, pp. 100-110 (2023)"
+        for i in range(1, 13)
+    ]
+    lines = body + refs
+    idx = find_reference_block_cutpoint(lines, _cfg(reference_block_min_doc_chars=100))
+    assert idx is not None, (
+        "Dual-gate should detect headless reference block with abbreviated journal names (no doi:)"
+    )
+    assert idx >= len(body)
+
+
+def test_headless_dual_gate_detection_adv_mater_style():
+    """Dual-gate must detect Adv. Mater. style references (chemistry, no DOI)."""
+    body = ["intro line " + ("x" * 80) for _ in range(40)]
+    refs = [
+        f"[{i}] Smith, J. Adv. Mater. {2010 + i}, 22, {100 + i}."
+        for i in range(1, 13)
+    ]
+    lines = body + refs
+    idx = find_reference_block_cutpoint(lines, _cfg(reference_block_min_doc_chars=100))
+    assert idx is not None, (
+        "Dual-gate should detect headless reference block with 'Adv.' journal abbreviations"
+    )
+    assert idx >= len(body)
+
+
 def test_min_doc_length_guard_only_affects_headless_heuristic():
     lines = ["# Intro", "Body", "## References", "[1] Foo"]
     assert find_reference_block_cutpoint(lines, _cfg(reference_block_min_doc_chars=99999)) == 2

@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 _HEADING_LINE_RE = re.compile(r"^\s*#{1,4}\s*(.+?)\s*$")
 _LIST_LIKE_RE = re.compile(r"^\s*(\[\d+\]|\d+\.\s+)")
 _BIB_TOKEN_RE = re.compile(
-    r"(doi:|arxiv:|\bvol\.\b|\bpp\.\b|\bet al\.\b|\bnat\.\b|\badv\.\b|\bacs\b|\bieee\b)",
+    r"(doi:|arxiv:|\bvol\.|\bpp\.|\bet al\.|\bnat\.|\badv\.|\bacs\b|\bieee\b)",
     re.IGNORECASE,
 )
 _REF_ITEM_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)\.)\s*(.+?)\s*$")

@@ -2816,6 +2816,15 @@ def get_search_database_status(*, ctx: Context) -> str:
         if collection_info.get('error'):
             output.append(f"**Error:** {collection_info['error']}")
 
+        refs_collection_info = status.get("refs_collection_info", {})
+        if refs_collection_info:
+            output.append("")
+            output.append("## References Collection")
+            output.append(f"**Name:** {refs_collection_info.get('name', 'Unknown')}")
+            output.append(f"**Document Count:** {refs_collection_info.get('count', 0)}")
+            if refs_collection_info.get('error'):
+                output.append(f"**Error:** {refs_collection_info['error']}")
+
         output.append("")
 
         update_config = status.get("update_config", {})

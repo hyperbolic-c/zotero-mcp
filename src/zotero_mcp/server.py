@@ -3,12 +3,10 @@
 from zotero_mcp.server_core import create_mcp, server_lifespan
 from zotero_mcp.server_registry import register_all_tools
 from zotero_mcp.server_tools.annotations_tools import (
-    _get_annotations,
     create_annotation,
     get_annotations,
 )
 from zotero_mcp.server_tools.connector_tools import (
-    _extract_item_key_from_input,
     chatgpt_connector_search,
     connector_fetch,
 )
@@ -65,7 +63,6 @@ __all__ = [
     "batch_update_tags",
     "advanced_search",
     "get_annotations",
-    "_get_annotations",
     "get_notes",
     "search_notes",
     "create_note",
@@ -73,7 +70,6 @@ __all__ = [
     "semantic_search",
     "update_search_database",
     "get_search_database_status",
-    "_extract_item_key_from_input",
     "chatgpt_connector_search",
     "connector_fetch",
 ]

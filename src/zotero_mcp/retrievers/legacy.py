@@ -5,17 +5,25 @@ from typing import Any, Callable
 from .base import BaseRetriever
 
 
-class LegacyFulltextRetriever(BaseRetriever):
-    """Legacy retrieval path with optional local fulltext extraction."""
+class LegacyRetriever(BaseRetriever):
+    """Legacy retrieval path.
+
+    When ``extract_fulltext=False`` (default), behaves like the former
+    ``LegacyMetadataRetriever`` – fulltext extraction is never requested during
+    ingestion.  When ``extract_fulltext=True``, the flag is forwarded to the
+    ingest function, matching the former ``LegacyFulltextRetriever`` behaviour.
+    """
 
     def __init__(
         self,
         *,
+        extract_fulltext: bool = False,
         ingest_fn: Callable[..., dict[str, Any]] | None = None,
         search_fn: Callable[..., dict[str, Any]] | None = None,
         status_fn: Callable[[], dict[str, Any]] | None = None,
         chroma_client: Any = None,
     ):
+        self._extract_fulltext = extract_fulltext
         self._ingest_fn = ingest_fn
         self._search_fn = search_fn
         self._status_fn = status_fn
@@ -28,11 +36,11 @@ class LegacyFulltextRetriever(BaseRetriever):
         extract_fulltext: bool = False,
     ) -> dict[str, Any]:
         if self._ingest_fn is None:
-            return {"error": "Ingest service is not available for legacy_fulltext retriever"}
+            return {"error": "Ingest service is not available for legacy retriever"}
         return self._ingest_fn(
             force_full_rebuild=force_rebuild,
             limit=limit,
-            extract_fulltext=extract_fulltext,
+            extract_fulltext=self._extract_fulltext and extract_fulltext,
         )
 
     def search(
@@ -50,11 +58,16 @@ class LegacyFulltextRetriever(BaseRetriever):
                 "filters": filters,
                 "results": [],
                 "total_found": 0,
-                "error": "Search service is not available for legacy_fulltext retriever",
+                "error": "Search service is not available for legacy retriever",
             }
         return self._search_fn(query=query, limit=limit, filters=filters)
 
     def get_database_status(self) -> dict[str, Any]:
         if self._status_fn is None:
-            return {"collection_info": {"error": "Status service is not available for legacy_fulltext retriever"}}
+            return {"collection_info": {"error": "Status service is not available for legacy retriever"}}
         return self._status_fn()
+
+
+# Backwards-compatible aliases used by existing imports
+LegacyMetadataRetriever = LegacyRetriever
+LegacyFulltextRetriever = LegacyRetriever

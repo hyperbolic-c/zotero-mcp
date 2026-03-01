@@ -9,6 +9,7 @@ from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .indexer import get_advanced_rag_defaults, load_semantic_config
 from .retrievers.factory import create_retriever
+from .utils import parse_creators_string
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class ZoteroSemanticSearch:
                 "status_fn": self._legacy_get_database_status,
                 "ingest_fn": None,
                 "get_item_by_key_fn": getattr(self.zotero_client, "item", None),
-                "parse_creators_fn": self._parse_creators_string,
+                "parse_creators_fn": parse_creators_string,
                 "get_items_from_source_fn": None,
             },
         )
@@ -62,29 +63,6 @@ class ZoteroSemanticSearch:
                 embedding_config=base_client.embedding_config,
             )
         return create_chroma_client(config_path=self.config_path)
-
-    @staticmethod
-    def _parse_creators_string(creators_str: str) -> list[dict[str, str]]:
-        if not creators_str:
-            return []
-
-        creators: list[dict[str, str]] = []
-        for creator in creators_str.split(";"):
-            creator = creator.strip()
-            if not creator:
-                continue
-            if "," in creator:
-                last, first = creator.split(",", 1)
-                creators.append(
-                    {
-                        "creatorType": "author",
-                        "firstName": first.strip(),
-                        "lastName": last.strip(),
-                    }
-                )
-            else:
-                creators.append({"creatorType": "author", "name": creator})
-        return creators
 
     def _enrich_search_results(self, chroma_results: dict[str, Any], query: str) -> list[dict[str, Any]]:
         enriched: list[dict[str, Any]] = []

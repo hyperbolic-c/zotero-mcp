@@ -32,6 +32,30 @@ def is_local_mode() -> bool:
     value = os.getenv("ZOTERO_LOCAL", "")
     return value.lower() in {"true", "yes", "1"}
 
+def parse_creators_string(creators_str: str) -> list[dict[str, str]]:
+    """Parse local DB creators string ('Last, First; Last2, First2') into API creator objects."""
+    if not creators_str:
+        return []
+
+    creators: list[dict[str, str]] = []
+    for creator in creators_str.split(";"):
+        creator = creator.strip()
+        if not creator:
+            continue
+        if "," in creator:
+            last, first = creator.split(",", 1)
+            creators.append(
+                {
+                    "creatorType": "author",
+                    "firstName": first.strip(),
+                    "lastName": last.strip(),
+                }
+            )
+        else:
+            creators.append({"creatorType": "author", "name": creator})
+    return creators
+
+
 def clean_html(raw_html: str) -> str:
     """
     Remove HTML tags from a string.

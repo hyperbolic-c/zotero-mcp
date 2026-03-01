@@ -14,8 +14,7 @@ from typing import Any
 
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
-from .utils import format_creators
-from .utils import is_local_mode
+from .utils import format_creators, is_local_mode, parse_creators_string
 from .local_db import LocalZoteroReader
 from .retrievers.factory import create_retriever
 
@@ -144,7 +143,8 @@ class ZoteroIndexer:
             retriever_mode: Mode for data ingestion ('legacy_metadata', 'advanced_rag', etc.)
             config_path: Path to configuration file for saving update state
             semantic_config: Full semantic configuration dictionary
-            chroma_client: Optional ChromaClient instance
+            chroma_client: ChromaClient instance. When omitted, one is created from
+                ``retriever_mode`` and ``config_path`` via ``_create_index_chroma_client``.
             zotero_client: Optional Zotero client instance
         """
         self.retriever_mode = retriever_mode
@@ -152,11 +152,11 @@ class ZoteroIndexer:
         self.db_path = db_path
         self.semantic_config = semantic_config or {}
         self.zotero_client = zotero_client or get_zotero_client()
-        self.chroma_client = chroma_client
-        
+        self.chroma_client = chroma_client or _create_index_chroma_client(retriever_mode, config_path)
+
         # Initialize update config
         self.update_config = self._load_update_config()
-        
+
         # Create retriever for ingestion strategy operations.
         self.retriever = retriever_factory(
             self.retriever_mode,
@@ -172,13 +172,10 @@ class ZoteroIndexer:
                 "search_fn": None,
                 "status_fn": None,
                 "get_items_from_source_fn": self._get_items_from_source,
-                "parse_creators_fn": self._parse_creators_string,
+                "parse_creators_fn": parse_creators_string,
                 "get_item_by_key_fn": getattr(self.zotero_client, "item", None),
             },
         )
-        
-        if self.chroma_client is None:
-            self.chroma_client = getattr(self.retriever, "chroma_client", None)
 
     def _load_update_config(self) -> dict[str, Any]:
         """Load update configuration from file or use defaults."""
@@ -381,7 +378,7 @@ class ZoteroIndexer:
                         "fulltextSource": item.fulltext_source or "",
                         "dateAdded": item.date_added,
                         "dateModified": item.date_modified,
-                        "creators": self._parse_creators_string(item.creators or ""),
+                        "creators": parse_creators_string(item.creators or ""),
                     },
                 }
                 if item.notes:
@@ -392,29 +389,6 @@ class ZoteroIndexer:
         except Exception as e:
             logger.error(f"Error reading from local database: {e}")
             return []
-
-    def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:
-        """Parse local DB creators string into API creator objects."""
-        if not creators_str:
-            return []
-
-        creators: list[dict[str, str]] = []
-        for creator in creators_str.split(";"):
-            creator = creator.strip()
-            if not creator:
-                continue
-            if "," in creator:
-                last, first = creator.split(",", 1)
-                creators.append(
-                    {
-                        "creatorType": "author",
-                        "firstName": first.strip(),
-                        "lastName": last.strip(),
-                    }
-                )
-            else:
-                creators.append({"creatorType": "author", "name": creator})
-        return creators
 
     def _create_document_text(self, item: dict[str, Any]) -> str:
         """Create searchable text from a Zotero item."""

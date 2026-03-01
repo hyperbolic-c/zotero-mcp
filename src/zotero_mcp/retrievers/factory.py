@@ -9,8 +9,7 @@ from zotero_mcp.chroma_client import ChromaClient
 
 from .advanced_rag import AdvancedRAGRetriever
 from .base import BaseRetriever
-from .legacy_fulltext import LegacyFulltextRetriever
-from .legacy_metadata import LegacyMetadataRetriever
+from .legacy import LegacyRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +54,27 @@ def create_retriever(
     config: dict[str, Any],
     services: dict[str, Any],
 ) -> BaseRetriever:
+    """Create a retriever for the given *mode* and *role*.
+
+    Args:
+        mode: Retriever strategy – ``"legacy_metadata"``, ``"legacy_fulltext"``,
+            or ``"advanced_rag"``.
+        role: Intended use – ``"search"`` or ``"ingest"``.  Only
+            ``AdvancedRAGRetriever`` uses this flag internally; legacy retrievers
+            ignore it.  Callers **must** enforce the contract themselves:
+            * ``role="search"`` → pass ``services["ingest_fn"] = None``
+            * ``role="ingest"`` → pass ``services["search_fn"] = None``
+        chroma_client: Pre-built ChromaDB client, or ``None`` to let the
+            factory build one (``advanced_rag`` mode only).
+        config: Mode-specific configuration (``advanced_rag``, ``config_path``,
+            ``db_path`` keys).
+        services: Callable injections (``ingest_fn``, ``search_fn``,
+            ``status_fn``, ``get_items_from_source_fn``, ``parse_creators_fn``,
+            ``get_item_by_key_fn``).
+    """
     if mode == "legacy_metadata":
-        return LegacyMetadataRetriever(
+        return LegacyRetriever(
+            extract_fulltext=False,
             ingest_fn=services.get("ingest_fn"),
             search_fn=services.get("search_fn"),
             status_fn=services.get("status_fn"),
@@ -64,7 +82,8 @@ def create_retriever(
         )
 
     if mode == "legacy_fulltext":
-        return LegacyFulltextRetriever(
+        return LegacyRetriever(
+            extract_fulltext=True,
             ingest_fn=services.get("ingest_fn"),
             search_fn=services.get("search_fn"),
             status_fn=services.get("status_fn"),
@@ -86,7 +105,8 @@ def create_retriever(
         )
 
     logger.warning("Unknown retriever mode '%s', falling back to legacy_metadata", mode)
-    return LegacyMetadataRetriever(
+    return LegacyRetriever(
+        extract_fulltext=False,
         ingest_fn=services.get("ingest_fn"),
         search_fn=services.get("search_fn"),
         status_fn=services.get("status_fn"),

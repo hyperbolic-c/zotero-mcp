@@ -18,11 +18,13 @@ class FakeSearch:
         self.last_query = None
         self.last_limit = None
         self.last_filters = None
+        self.last_kwargs = None
 
-    def search(self, query, limit, filters):
+    def search(self, query, limit, filters, **kwargs):
         self.last_query = query
         self.last_limit = limit
         self.last_filters = filters
+        self.last_kwargs = kwargs
         return self.payload
 
 
@@ -33,6 +35,7 @@ def _make_payload(abstract_text: str, matched_text: str):
                 "item_key": "ITEM1234",
                 "similarity_score": 0.88,
                 "matched_text": matched_text,
+                "resolved_citations": [{"ref_num": 1, "ref_text": "Ref one"}, {"ref_num": 2, "ref_text": "Ref two"}],
                 "metadata": {},
                 "zotero_item": {
                     "data": {
@@ -112,3 +115,42 @@ def test_semantic_search_parses_and_translates_filters(monkeypatch):
     )
 
     assert fake_search.last_filters == {"item_type": "note"}
+
+
+def test_semantic_search_citation_appendix_enabled_by_default(monkeypatch):
+    fake_search = FakeSearch(_make_payload("x", "y [1] [2]"))
+    monkeypatch.setattr("zotero_mcp.semantic_search.create_semantic_search", lambda *_args, **_kwargs: fake_search)
+
+    result = server.semantic_search(query="test query", ctx=DummyContext())
+
+    assert "**Citations Referenced in Matched Content:**" in result
+    assert "- [1] Ref one" in result
+    assert "- [2] Ref two" in result
+
+
+def test_semantic_search_can_disable_citation_appendix(monkeypatch):
+    fake_search = FakeSearch(_make_payload("x", "y [1] [2]"))
+    monkeypatch.setattr("zotero_mcp.semantic_search.create_semantic_search", lambda *_args, **_kwargs: fake_search)
+
+    result = server.semantic_search(
+        query="test query",
+        include_citation_references=False,
+        ctx=DummyContext(),
+    )
+
+    assert "**Citations Referenced in Matched Content:**" not in result
+    assert fake_search.last_kwargs["include_citation_references"] is False
+
+
+def test_semantic_search_truncates_citation_appendix(monkeypatch):
+    fake_search = FakeSearch(_make_payload("x", "y [1] [2]"))
+    monkeypatch.setattr("zotero_mcp.semantic_search.create_semantic_search", lambda *_args, **_kwargs: fake_search)
+
+    result = server.semantic_search(
+        query="test query",
+        citation_max_items_per_result=1,
+        ctx=DummyContext(),
+    )
+
+    assert "- [1] Ref one" in result
+    assert "- [2] Ref two" not in result

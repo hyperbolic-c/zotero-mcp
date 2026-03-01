@@ -2534,6 +2534,8 @@ def semantic_search(
     filters: dict[str, str] | str | None = None,
     abstract_max_chars: int | None = None,
     matched_content_max_chars: int | None = None,
+    include_citation_references: bool = True,
+    citation_max_items_per_result: int = 8,
     *,
     ctx: Context
 ) -> str:
@@ -2546,6 +2548,8 @@ def semantic_search(
         filters: Optional metadata filters as dict or JSON string. Example: {"item_type": "note"}
         abstract_max_chars: Optional max characters for abstract display. None means no truncation.
         matched_content_max_chars: Optional max characters for matched content display. None means no truncation.
+        include_citation_references: Whether to append references cited in matched content.
+        citation_max_items_per_result: Max number of appended references per search result.
         ctx: MCP context
 
     Returns:
@@ -2566,6 +2570,8 @@ def semantic_search(
             return "Error: abstract_max_chars must be a positive integer when provided"
         if matched_content_max_chars is not None and matched_content_max_chars <= 0:
             return "Error: matched_content_max_chars must be a positive integer when provided"
+        if citation_max_items_per_result <= 0:
+            return "Error: citation_max_items_per_result must be a positive integer"
 
         # Parse and validate filters parameter
         if filters is not None:
@@ -2603,7 +2609,13 @@ def semantic_search(
         search = create_semantic_search(str(config_path))
 
         # Perform search
-        results = search.search(query=query, limit=limit, filters=filters)
+        results = search.search(
+            query=query,
+            limit=limit,
+            filters=filters,
+            include_citation_references=include_citation_references,
+            citation_max_items_per_result=citation_max_items_per_result,
+        )
 
         if results.get("error"):
             return f"Semantic search error: {results['error']}"
@@ -2661,6 +2673,14 @@ def semantic_search(
                     output.append(
                         f"**Matched Content:** {_format_with_optional_limit(matched_text, matched_content_max_chars)}"
                     )
+                if include_citation_references:
+                    resolved = result.get("resolved_citations", [])[:citation_max_items_per_result]
+                    if resolved:
+                        output.append("**Citations Referenced in Matched Content:**")
+                        for citation in resolved:
+                            ref_num = citation.get("ref_num")
+                            ref_text = citation.get("ref_text", "")
+                            output.append(f"- [{ref_num}] {ref_text}")
 
                 output.append("")  # Empty line between items
             else:

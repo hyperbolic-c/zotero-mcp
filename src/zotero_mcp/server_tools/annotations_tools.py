@@ -610,7 +610,7 @@ def register(mcp: FastMCP) -> None:
         name="zotero_get_annotations",
         description="Get all annotations for a specific item or across your entire Zotero library."
     )(get_annotations)
-    
+
     mcp.tool(
         name="zotero_create_annotation",
         description="Create a highlight annotation on a PDF or EPUB attachment with optional comment."

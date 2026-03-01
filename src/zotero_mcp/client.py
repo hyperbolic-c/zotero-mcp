@@ -207,7 +207,7 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
                 key_part = line.split(":", 1)[1].strip() if ":" in line else line.strip()
                 lines.append(f"**Citation Key (from Extra):** {key_part}")
                 break
-    
+
     # Tags
     if tags := data.get("tags"):
         tag_list = [f"`{tag['tag']}`" for tag in tags]

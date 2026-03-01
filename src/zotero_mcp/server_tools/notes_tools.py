@@ -42,7 +42,7 @@ def get_notes(
         notes = []
         if item_key:
             notes = zot.children(item_key, **params) if not limit else zot.children(item_key, limit=limit, **params)
-        else: 
+        else:
             notes = zot.items(**params) if not limit else zot.items(limit=limit, **params)
 
         if not notes:

@@ -19,7 +19,6 @@ from questionary import Style
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
-from prompt_toolkit.key_binding import KeyBindings
 
 console = Console()
 
@@ -36,27 +35,12 @@ custom_style = Style([
     ('text', ''),                       # Plain text
 ])
 
-def get_cancel_kb():
-    """Create keybindings to handle Esc key for cancelling."""
-    kb = KeyBindings()
-    @kb.add("escape")
-    def _(event):
-        event.app.exit(result=None)
-    return kb
-
 class SetupUI:
     """Helper class to handle the interactive setup UI."""
     
     def __init__(self):
         self.steps = []
         self.current_step_idx = -1
-        self._kb = get_cancel_kb()
-
-    def _handle_cancel(self, result):
-        if result is None:
-            console.print("\n[yellow]Setup cancelled.[/yellow]")
-            sys.exit(0)
-        return result
 
     def add_step(self, name):
         self.steps.append(name)
@@ -77,51 +61,43 @@ class SetupUI:
                 # Completed step
                 console.print(f"  [green]✔[/green] [dim]{step}[/dim]")
             elif i == self.current_step_idx:
-                # Current step - clear arrow pointer, no vertical line alignment needed
+                # Current step - clean arrow pointer
                 console.print(f"  [bold blue]❯ {step}[/bold blue]")
             else:
                 # Future step
                 console.print(f"    [dim]{step}[/dim]")
 
     def ask_select(self, message, choices, default=None):
-        result = questionary.select(
+        return questionary.select(
             message,
             choices=choices,
             default=default if default is not None else choices[0] if isinstance(choices[0], str) else choices[0].value,
             style=custom_style,
             use_indicator=True,
-            pointer='❯',
-            key_bindings=self._kb
+            pointer='❯'
         ).ask()
-        return self._handle_cancel(result)
 
     def ask_text(self, message, default="", instruction=None):
-        result = questionary.text(
+        return questionary.text(
             message,
             default=str(default) if default is not None else "",
             instruction=instruction,
-            style=custom_style,
-            key_bindings=self._kb
+            style=custom_style
         ).ask()
-        return self._handle_cancel(result)
 
     def ask_password(self, message, instruction=None):
-        result = questionary.password(
+        return questionary.password(
             message,
             instruction=instruction,
-            style=custom_style,
-            key_bindings=self._kb
+            style=custom_style
         ).ask()
-        return self._handle_cancel(result)
 
     def ask_confirm(self, message, default=True):
-        result = questionary.confirm(
+        return questionary.confirm(
             message,
             default=default,
-            style=custom_style,
-            key_bindings=self._kb
+            style=custom_style
         ).ask()
-        return self._handle_cancel(result)
 
 
 ui = SetupUI()

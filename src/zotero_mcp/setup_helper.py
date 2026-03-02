@@ -689,9 +689,15 @@ def main(cli_args=None):
                 console.print(f"  {env_line}")
             except Exception: pass
             
-            if semantic_config_changed:
-                console.print("\n[yellow]Note:[/yellow] You changed semantic search settings. Consider rebuilding:")
-                console.print("  [bold]zotero-mcp update-db --force-rebuild[/bold]")
+            if semantic_config:
+                mode = semantic_config.get("retriever_mode", "legacy_metadata")
+                console.print(f"\n[bold]Semantic Search:[/bold]")
+                console.print(f"• Model: [blue]{semantic_config.get('embedding_model', 'default')}[/blue]")
+                console.print(f"• Mode: [blue]{mode}[/blue]")
+                console.print("\n[bold]Database Indexing:[/bold]")
+                console.print("• Run [bold]zotero-mcp update-db[/bold] to incrementally index new or changed items.")
+                console.print("• Run [bold]zotero-mcp update-db --force-rebuild[/bold] to completely rebuild your index.")
+                console.print("  [dim](Recommended if you changed embedding models or retrieval modes)[/dim]")
             return 0
         else:
             updated_config_path = update_claude_config(
@@ -701,16 +707,16 @@ def main(cli_args=None):
             )
             if updated_config_path:
                 console.print("\n[bold green]Setup complete![/bold green]")
-                console.print("\n[bold]To use Zotero in Claude Desktop:[/bold]")
-                console.print("1. Restart Claude Desktop if it's running")
-                console.print("2. In Claude, type: [bold]/tools zotero[/bold]")
                 
-                if semantic_config_changed:
+                if semantic_config:
                     mode = semantic_config.get("retriever_mode", "legacy_metadata")
                     console.print(f"\n[bold]Semantic Search:[/bold]")
                     console.print(f"• Model: [blue]{semantic_config.get('embedding_model', 'default')}[/blue]")
                     console.print(f"• Mode: [blue]{mode}[/blue]")
-                    console.print("• Run [bold]zotero-mcp update-db --force-rebuild[/bold] to index your library")
+                    console.print("\n[bold]Database Indexing:[/bold]")
+                    console.print("• Run [bold]zotero-mcp update-db[/bold] to incrementally index new or changed items.")
+                    console.print("• Run [bold]zotero-mcp update-db --force-rebuild[/bold] to completely rebuild your index.")
+                    console.print("  [dim](Recommended if you changed embedding models or retrieval modes)[/dim]")
                 
                 if use_local:
                     console.print("\n[dim]Note: Make sure Zotero is running and the local API is enabled.[/dim]")

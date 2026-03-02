@@ -60,12 +60,12 @@ class SetupUI:
         for i, step in enumerate(self.steps):
             if i < self.current_step_idx:
                 # Completed step
-                console.print(f"  {step}", style="dim")
+                console.print(f"  [dim]✔ {step}[/dim]")
             elif i == self.current_step_idx:
                 # Current step
-                console.print(f"  [bold blue]│[/bold blue]")
+                console.print(f"  [bold blue]｜[/bold blue]")
                 console.print(f"  [bold blue]◆[/bold blue] [bold]{step}[/bold]")
-                console.print(f"  [bold blue]│[/bold blue]")
+                console.print(f"  [bold blue]｜[/bold blue]")
             else:
                 # Future step
                 pass

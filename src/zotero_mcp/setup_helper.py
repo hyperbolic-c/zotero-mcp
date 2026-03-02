@@ -42,6 +42,12 @@ class SetupUI:
         self.steps = []
         self.current_step_idx = -1
 
+    def _handle_cancel(self, result):
+        if result is None:
+            console.print("\n[yellow]Setup cancelled by user.[/yellow]")
+            sys.exit(0)
+        return result
+
     def add_step(self, name):
         self.steps.append(name)
 
@@ -59,19 +65,23 @@ class SetupUI:
         print()
         for i, step in enumerate(self.steps):
             if i < self.current_step_idx:
-                # Completed step
+                # Completed step: aligns with the left edge of the diamond
                 console.print(f"  [dim]✔ {step}[/dim]")
             elif i == self.current_step_idx:
-                # Current step
-                console.print(f"  [bold blue]｜[/bold blue]")
+                # Current step: using 3:2 space ratio to align the line with the diamond's center/right
+                # In most CJK terminals, ◆ is 2-cells wide.
+                # 3 spaces + │ (1-cell) = 4 cells total
+                # 2 spaces + ◆ (2-cells) = 4 cells total
+                # This aligns the vertical line with the right half of the diamond.
+                console.print(f"   [bold blue]│[/bold blue]")
                 console.print(f"  [bold blue]◆[/bold blue] [bold]{step}[/bold]")
-                console.print(f"  [bold blue]｜[/bold blue]")
+                console.print(f"   [bold blue]│[/bold blue]")
             else:
                 # Future step
                 pass
 
     def ask_select(self, message, choices, default=None):
-        return questionary.select(
+        result = questionary.select(
             message,
             choices=choices,
             default=default if default is not None else choices[0] if isinstance(choices[0], str) else choices[0].value,
@@ -79,28 +89,32 @@ class SetupUI:
             use_indicator=True,
             pointer='❯'
         ).ask()
+        return self._handle_cancel(result)
 
     def ask_text(self, message, default="", instruction=None):
-        return questionary.text(
+        result = questionary.text(
             message,
             default=str(default) if default is not None else "",
             instruction=instruction,
             style=custom_style
         ).ask()
+        return self._handle_cancel(result)
 
     def ask_password(self, message, instruction=None):
-        return questionary.password(
+        result = questionary.password(
             message,
             instruction=instruction,
             style=custom_style
         ).ask()
+        return self._handle_cancel(result)
 
     def ask_confirm(self, message, default=True):
-        return questionary.confirm(
+        result = questionary.confirm(
             message,
             default=default,
             style=custom_style
         ).ask()
+        return self._handle_cancel(result)
 
 
 ui = SetupUI()

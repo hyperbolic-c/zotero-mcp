@@ -26,12 +26,12 @@ console = Console()
 custom_style = Style([
     ('qmark', 'fg:#00d700 bold'),       # Question mark color (green)
     ('question', 'bold'),               # Question text
-    ('answer', 'fg:#005fdf bold'),      # Answer text
-    ('pointer', 'fg:#00d700 bold'),      # Pointer (green)
-    ('highlighted', 'fg:#00d700 bold'), # Highlighted item (green)
+    ('answer', 'fg:#00d700 bold'),      # Answer text
+    ('pointer', 'fg:#00d700 bold'),     # Pointer (green)
+    ('highlighted', 'fg:#00d700 bold'), # Highlighted item (green text, no background)
     ('selected', 'fg:#00d700'),         # Selected item
     ('separator', 'fg:#cc5454'),        # Separator
-    ('instruction', 'fg:#8a8a8a'),       # Instruction text
+    ('instruction', 'fg:#8a8a8a'),      # Instruction text
     ('text', ''),                       # Plain text
 ])
 

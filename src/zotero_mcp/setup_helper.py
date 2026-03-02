@@ -28,8 +28,8 @@ custom_style = Style([
     ('question', 'bold'),               # Question text
     ('answer', 'fg:#00d700 bold'),      # Answer text
     ('pointer', 'fg:#00d700 bold'),     # Pointer (green)
-    ('highlighted', 'fg:#00d700 bold'), # Highlighted item (green text, no background)
-    ('selected', 'fg:#00d700'),         # Selected item
+    ('highlighted', 'fg:#00d700 bold noinherit'), # Force no background on highlight
+    ('selected', 'fg:#00d700 noinherit'),         # Force no background on selected
     ('separator', 'fg:#cc5454'),        # Separator
     ('instruction', 'fg:#8a8a8a'),      # Instruction text
     ('text', ''),                       # Plain text

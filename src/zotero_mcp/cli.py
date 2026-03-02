@@ -10,7 +10,22 @@ import subprocess
 import sys
 from pathlib import Path
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.theme import Theme
+
 from zotero_mcp.server import mcp
+
+# Setup rich console with custom theme
+custom_theme = Theme({
+    "info": "cyan",
+    "warning": "yellow",
+    "error": "red",
+    "success": "green",
+    "bold": "bold",
+})
+console = Console(theme=custom_theme)
 
 
 def obfuscate_sensitive_value(value, keep_chars=4):
@@ -119,10 +134,10 @@ def _save_zotero_db_path_to_config(config_path: Path, db_path: str) -> None:
         with open(config_path, 'w') as f:
             json.dump(full_config, f, indent=2)
 
-        print(f"Saved Zotero database path to config: {config_path}")
+        console.print(f"[success]✓[/success] Saved Zotero database path to config: [blue]{config_path}[/blue]")
 
     except Exception as e:
-        print(f"Warning: Could not save db_path to config: {e}")
+        console.print(f"[warning]Warning: Could not save db_path to config: {e}[/warning]")
 
 
 def setup_zotero_environment():
@@ -244,7 +259,7 @@ def main():
 
     if args.command == "version":
         from zotero_mcp._version import __version__
-        print(f"Zotero MCP v{__version__}")
+        console.print(f"Zotero MCP [bold blue]v{__version__}[/bold blue]")
         sys.exit(0)
 
     elif args.command == "setup-info":
@@ -266,44 +281,42 @@ def main():
         # Choose which env to display: prefer standalone if present or if Claude disabled
         display_env = standalone_env_vars if (no_claude or standalone_env_vars) else (claude_env_vars or {"ZOTERO_LOCAL": "true"})
 
-        print("=== Zotero MCP Setup Information ===")
-        print()
-        print("🔧 Installation Details:")
-        print(f"  Command path: {executable_path}")
-        print(f"  Python path: {sys.executable}")
+        console.print(Panel("[bold blue]Zotero MCP Setup Information[/bold blue]", expand=False))
+        
+        # Installation Details Table
+        install_table = Table(title="🔧 Installation Details", show_header=False, box=None)
+        install_table.add_row("Command path", f"[blue]{executable_path}[/blue]")
+        install_table.add_row("Python path", f"[blue]{sys.executable}[/blue]")
 
         # Detect installation method
+        method = "unknown"
         try:
-            # Check if installed via uv
             result = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=5)
             if "zotero-mcp-server" in result.stdout or "zotero-mcp" in result.stdout:
-                print("  Installation method: uv tool")
+                method = "uv tool"
             else:
-                # Check pip
                 result = subprocess.run([sys.executable, "-m", "pip", "show", "zotero-mcp-server"],
                                       capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
-                    print("  Installation method: pip")
-                else:
-                    print("  Installation method: unknown")
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
-            print("  Installation method: unknown")
+                    method = "pip"
+        except Exception: pass
+        install_table.add_row("Installation method", f"[blue]{method}[/blue]")
+        console.print(install_table)
 
-        print()
-        print("⚙️  MCP Client Configuration:")
-        print(f"  Command: {executable_path}")
-        print("  Arguments: [] (empty)")
-
-        # Show environment variables with obfuscated sensitive values
+        # MCP Client Configuration
+        console.print("\n[bold]⚙️  MCP Client Configuration:[/bold]")
+        config_table = Table(show_header=False, box=None, padding=(0, 2))
+        config_table.add_row("Command", f"[blue]{executable_path}[/blue]")
+        config_table.add_row("Arguments", "[] (empty)")
+        
         obfuscated_env_vars = obfuscate_config_for_display(display_env)
-        print(f"  Environment (single-line): {json.dumps(obfuscated_env_vars, separators=(',', ':'))}")
-        print("  💡 Note: This shows client config. Shell variables may override for CLI use.")
-        print(f"  Claude integration: {'disabled' if no_claude else 'enabled'}")
+        config_table.add_row("Environment", f"[dim]{json.dumps(obfuscated_env_vars, separators=(',', ':'))}[/dim]")
+        config_table.add_row("Claude integration", "[green]enabled[/green]" if not no_claude else "[red]disabled[/red]")
+        console.print(config_table)
 
         # Only show Claude Desktop config if not globally disabled
         if not no_claude:
-            print()
-            print("For Claude Desktop (claude_desktop_config.json):")
+            console.print("\n[bold]For Claude Desktop (claude_desktop_config.json):[/bold]")
             config_snippet = {
                 "mcpServers": {
                     "zotero": {
@@ -312,51 +325,41 @@ def main():
                     }
                 }
             }
-            print(json.dumps(config_snippet, indent=2))
+            console.print(Panel(json.dumps(config_snippet, indent=2), border_style="dim"))
 
-        # Show semantic search database info with detailed statistics
-        print()
-        print("🧠 Semantic Search Database:")
-
-        # Check for semantic search config
+        # Semantic Search Info
+        console.print("\n[bold]🧠 Semantic Search Database:[/bold]")
         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
         if config_path.exists():
             try:
                 from zotero_mcp.semantic_search import create_semantic_search
                 from zotero_mcp.indexer import create_indexer
 
-                # Get database status (similar to db-status command)
                 search = create_semantic_search(str(config_path))
                 status = search.get_database_status()
                 index_status = create_indexer(str(config_path)).get_update_status()
-
                 collection_info = status.get("collection_info", {})
 
-                print("  Status: ✅ Configuration file found")
-                print(f"  Config path: {config_path}")
-                print(f"  Collection: {collection_info.get('name', 'Unknown')}")
-                print(f"  Document count: {collection_info.get('count', 0)}")
-                print(f"  Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
-                print(f"  Database path: {collection_info.get('persist_directory', 'Unknown')}")
-                print(f"  Retriever mode: {status.get('retriever_mode', 'legacy_metadata')}")
-                if status.get("reranker_status"):
-                    print(f"  Reranker: {status.get('reranker_status')}")
-
+                db_table = Table(show_header=False, box=None, padding=(0, 2))
+                db_table.add_row("Status", "[success]✅ Configuration file found[/success]")
+                db_table.add_row("Config path", f"[blue]{config_path}[/blue]")
+                db_table.add_row("Collection", f"[blue]{collection_info.get('name', 'Unknown')}[/blue]")
+                db_table.add_row("Document count", f"[blue]{collection_info.get('count', 0)}[/blue]")
+                db_table.add_row("Embedding model", f"[blue]{collection_info.get('embedding_model', 'Unknown')}[/blue]")
+                db_table.add_row("Database path", f"[blue]{collection_info.get('persist_directory', 'Unknown')}[/blue]")
+                db_table.add_row("Retriever mode", f"[blue]{status.get('retriever_mode', 'legacy_metadata')}[/blue]")
+                
                 update_config = index_status.get("update_config", {})
-                print(f"  Auto update: {update_config.get('auto_update', False)}")
-                print(f"  Update frequency: {update_config.get('update_frequency', 'manual')}")
-                print(f"  Last update: {update_config.get('last_update', 'Never')}")
-                print(f"  Should update: {index_status.get('should_update', False)}")
-
-                if collection_info.get('error'):
-                    print(f"  Error: {collection_info['error']}")
-
+                db_table.add_row("Auto update", f"[blue]{update_config.get('auto_update', False)}[/blue]")
+                db_table.add_row("Update frequency", f"[blue]{update_config.get('update_frequency', 'manual')}[/blue]")
+                db_table.add_row("Last update", f"[blue]{update_config.get('last_update', 'Never')}[/blue]")
+                
+                console.print(db_table)
             except Exception as e:
-                print("  Status: ⚠️ Configuration found but database error")
-                print(f"  Error: {e}")
+                console.print(f"  [error]⚠️ Configuration found but database error: {e}[/error]")
         else:
-            print("  Status: ⚠️ Not configured")
-            print("  💡 Run 'zotero-mcp setup' to configure semantic search")
+            console.print("  [warning]⚠️ Not configured[/warning]")
+            console.print("  💡 Run [bold]zotero-mcp setup[/bold] to configure semantic search")
 
         sys.exit(0)
 
@@ -365,122 +368,101 @@ def main():
         sys.exit(setup_main(args))
 
     elif args.command == "update-db":
-        # Setup Zotero environment variables
         setup_zotero_environment()
-
         from zotero_mcp.indexer import create_indexer
 
-        # Determine config path
-        config_path = args.config_path
-        if not config_path:
-            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-        else:
-            config_path = Path(config_path)
+        config_path = Path(args.config_path) if args.config_path else Path.home() / ".config" / "zotero-mcp" / "config.json"
+        console.print(f"[info]Using configuration:[/info] [blue]{config_path}[/blue]")
 
-        print(f"Using configuration: {config_path}")
-
-        # Get optional db_path override from CLI
         db_path = getattr(args, 'db_path', None)
         if db_path:
-            print(f"Using custom Zotero database: {db_path}")
-            # Save the db_path to config file for future use
+            console.print(f"[info]Using custom Zotero database:[/info] [blue]{db_path}[/blue]")
             _save_zotero_db_path_to_config(config_path, db_path)
 
         try:
-            # Create indexer instance with optional db_path override
             indexer = create_indexer(str(config_path), db_path=db_path)
-
-            print("Starting database update...")
+            console.print("[bold]Starting database update...[/bold]")
             if args.fulltext:
-                print("Note: --fulltext flag enabled. Will extract content from local database if available.")
+                console.print("[dim]Note: --fulltext flag enabled. Will extract content from local database if available.[/dim]")
+            
             stats = indexer.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
                 extract_fulltext=args.fulltext
             )
+            
             retriever_mode = stats.get("retriever_mode", "legacy_metadata")
             added_count = stats.get("added_items", stats.get("added_chunks", 0))
             updated_count = stats.get("updated_items", stats.get("updated_chunks", 0))
             added_label = "Added chunks" if retriever_mode == "advanced_rag" else "Added"
             updated_label = "Updated chunks" if retriever_mode == "advanced_rag" else "Updated"
 
-            print(f"\nDatabase update completed:")
-            print(f"- Total items: {stats.get('total_items', 0)}")
-            print(f"- Processed: {stats.get('processed_items', 0)}")
-            print(f"- {added_label}: {added_count}")
-            print(f"- {updated_label}: {updated_count}")
-            print(f"- Skipped: {stats.get('skipped_items', 0)}")
-            print(f"- Errors: {stats.get('errors', 0)}")
-            print(f"- Duration: {stats.get('duration', 'Unknown')}")
+            console.print("\n[bold success]Database update completed:[/bold success]")
+            summary_table = Table(show_header=False, box=None, padding=(0, 2))
+            summary_table.add_row("Total items", str(stats.get('total_items', 0)))
+            summary_table.add_row("Processed", str(stats.get('processed_items', 0)))
+            summary_table.add_row(added_label, f"[green]{added_count}[/green]")
+            summary_table.add_row(updated_label, f"[blue]{updated_count}[/blue]")
+            summary_table.add_row("Skipped", str(stats.get('skipped_items', 0)))
+            summary_table.add_row("Errors", f"[red]{stats.get('errors', 0)}[/red]")
+            summary_table.add_row("Duration", str(stats.get('duration', 'Unknown')))
+            console.print(summary_table)
 
             if stats.get('error'):
-                print(f"Error: {stats['error']}")
+                console.print(f"[error]Error: {stats['error']}[/error]")
                 sys.exit(1)
 
         except Exception as e:
-            print(f"Error updating database: {e}")
+            console.print(f"[error]Error updating database: {e}[/error]")
             sys.exit(1)
 
     elif args.command == "db-status":
-        # Setup Zotero environment variables
         setup_zotero_environment()
-
         from zotero_mcp.semantic_search import create_semantic_search
         from zotero_mcp.indexer import create_indexer
 
-        # Determine config path
-        config_path = args.config_path
-        if not config_path:
-            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-        else:
-            config_path = Path(config_path)
+        config_path = Path(args.config_path) if args.config_path else Path.home() / ".config" / "zotero-mcp" / "config.json"
 
         try:
-            # Create semantic search instance
             search = create_semantic_search(str(config_path))
-
-            # Get database status
             status = search.get_database_status()
             index_status = create_indexer(str(config_path)).get_update_status()
 
-            print("=== Semantic Search Database Status ===")
+            console.print(Panel("[bold blue]Semantic Search Database Status[/bold blue]", expand=False))
 
             collection_info = status.get("collection_info", {})
-            print(f"Collection: {collection_info.get('name', 'Unknown')}")
-            print(f"Document count: {collection_info.get('count', 0)}")
-            print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
-            print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
-            print(f"Retriever mode: {status.get('retriever_mode', 'legacy_metadata')}")
+            db_table = Table(show_header=False, box=None, padding=(0, 2))
+            db_table.add_row("Collection", f"[blue]{collection_info.get('name', 'Unknown')}[/blue]")
+            db_table.add_row("Document count", f"[blue]{collection_info.get('count', 0)}[/blue]")
+            db_table.add_row("Embedding model", f"[blue]{collection_info.get('embedding_model', 'Unknown')}[/blue]")
+            db_table.add_row("Database path", f"[blue]{collection_info.get('persist_directory', 'Unknown')}[/blue]")
+            db_table.add_row("Retriever mode", f"[blue]{status.get('retriever_mode', 'legacy_metadata')}[/blue]")
             if status.get("reranker_status"):
-                print(f"Reranker: {status.get('reranker_status')}")
+                db_table.add_row("Reranker", f"[blue]{status.get('reranker_status')}[/blue]")
+            console.print(db_table)
 
             update_config = index_status.get("update_config", {})
-            print(f"\nUpdate configuration:")
-            print(f"- Auto update: {update_config.get('auto_update', False)}")
-            print(f"- Frequency: {update_config.get('update_frequency', 'manual')}")
-            print(f"- Last update: {update_config.get('last_update', 'Never')}")
-            print(f"- Should update: {index_status.get('should_update', False)}")
+            console.print("\n[bold]Update configuration:[/bold]")
+            up_table = Table(show_header=False, box=None, padding=(0, 2))
+            up_table.add_row("Auto update", f"[blue]{update_config.get('auto_update', False)}[/blue]")
+            up_table.add_row("Frequency", f"[blue]{update_config.get('update_frequency', 'manual')}[/blue]")
+            up_table.add_row("Last update", f"[blue]{update_config.get('last_update', 'Never')}[/blue]")
+            up_table.add_row("Should update", f"[blue]{index_status.get('should_update', False)}[/blue]")
+            console.print(up_table)
 
             if collection_info.get('error'):
-                print(f"\nError: {collection_info['error']}")
+                console.print(f"\n[error]Error: {collection_info['error']}[/error]")
 
         except Exception as e:
-            print(f"Error getting database status: {e}")
+            console.print(f"[error]Error getting database status: {e}[/error]")
             sys.exit(1)
 
     elif args.command == "db-inspect":
-        # Setup Zotero environment variables
         setup_zotero_environment()
-
         from zotero_mcp.semantic_search import create_semantic_search
         from collections import Counter
 
-        # Determine config path
-        config_path = args.config_path
-        if not config_path:
-            config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-        else:
-            config_path = Path(config_path)
+        config_path = Path(args.config_path) if args.config_path else Path.home() / ".config" / "zotero-mcp" / "config.json"
 
         try:
             search = create_semantic_search(str(config_path))
@@ -488,152 +470,86 @@ def main():
             col = client.collection
 
             if args.stats:
-                # Show aggregate stats (merged from former db-stats)
                 meta = col.get(include=["metadatas"])  # type: ignore
                 metas = meta.get("metadatas", [])
-                print("=== Semantic DB Inspection (Stats) ===")
+                console.print(Panel("[bold blue]Semantic DB Inspection (Stats)[/bold blue]", expand=False))
+                
                 info = client.get_collection_info()
-                print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
-                print(f"Count: {info.get('count')}")
+                console.print(f"Collection: [blue]{info.get('name')}[/blue] @ [dim]{info.get('persist_directory')}[/dim]")
+                console.print(f"Total Count: [bold blue]{info.get('count')}[/bold blue]")
 
-                # Item type distribution
                 item_types = [ (m or {}).get("item_type", "") for m in metas ]
                 ct_types = Counter(item_types)
-                print("Item types:")
-                for t, c in ct_types.most_common(20):
-                    print(f"  {t or '(missing)'}: {c}")
+                console.print("\n[bold]Item types:[/bold]")
+                for t, c in ct_types.most_common(10):
+                    console.print(f"  • {t or '(missing)'}: [blue]{c}[/blue]")
 
-                # Fulltext coverage by type (pdf/html)
-                coverage = {}
-                for m in metas:
-                    m = m or {}
-                    t = m.get("item_type", "") or "(missing)"
-                    cov = coverage.setdefault(t, {"total": 0, "with_fulltext": 0, "pdf": 0, "html": 0})
-                    cov["total"] += 1
-                    if m.get("has_fulltext"):
-                        cov["with_fulltext"] += 1
-                        src = (m.get("fulltext_source") or "").lower()
-                        if src == "pdf":
-                            cov["pdf"] += 1
-                        elif src == "html":
-                            cov["html"] += 1
-                print("Fulltext coverage (by type):")
-                for t, cov in coverage.items():
-                    print(f"  {t}: {cov['with_fulltext']}/{cov['total']} (pdf:{cov['pdf']}, html:{cov['html']})")
-
-                # Common titles (may indicate duplicates)
-                titles = [ (m or {}).get("title", "") for m in metas ]
-                from collections import Counter as _Counter
-                ct_titles = _Counter([t for t in titles if t])
-                common = [(t,c) for t,c in ct_titles.most_common(10)]
-                if common:
-                    print("Common titles:")
-                    for t, c in common:
-                        print(f"  {t[:80]}{'...' if len(t)>80 else ''}: {c}")
                 return
 
             include = ["metadatas"]
-            if args.show_documents:
-                include.append("documents")
-
-            # Fetch up to limit; filter client-side if requested
+            if args.show_documents: include.append("documents")
             data = col.get(limit=args.limit, include=include)
 
-            print("=== Semantic DB Inspection ===")
-            total = client.get_collection_info().get("count", 0)
-            print(f"Total documents: {total}")
-            print(f"Showing up to: {args.limit}")
+            console.print(Panel(f"[bold blue]Semantic DB Inspection[/bold blue] (showing {args.limit})", expand=False))
 
             shown = 0
             for i, meta in enumerate(data.get("metadatas", [])):
                 meta = meta or {}
-                title = meta.get("title", "")
-                creators = meta.get("creators", "")
+                title = meta.get("title", "Untitled")
+                creators = meta.get("creators", "Unknown")
                 if args.filter_text:
                     needle = args.filter_text.lower()
-                    if needle not in (title or "").lower() and needle not in (creators or "").lower():
+                    if needle not in title.lower() and needle not in creators.lower():
                         continue
-                print(f"- {title} | {creators}")
+                console.print(f"[bold]• {title}[/bold] | [dim]{creators}[/dim]")
                 if args.show_documents:
                     doc = (data.get("documents", [""])[i] or "").strip()
-                    snippet = doc[:200].replace("\n", " ") + ("..." if len(doc) > 200 else "")
-                    if snippet:
-                        print(f"  doc: {snippet}")
+                    snippet = doc[:150].replace("\n", " ") + ("..." if len(doc) > 150 else "")
+                    if snippet: console.print(f"  [italic dim]{snippet}[/italic dim]")
                 shown += 1
-                if shown >= args.limit:
-                    break
+                if shown >= args.limit: break
 
             if shown == 0:
-                print("No records matched your filter.")
+                console.print("[warning]No records matched your filter.[/warning]")
 
         except Exception as e:
-            print(f"Error inspecting database: {e}")
+            console.print(f"[error]Error inspecting database: {e}[/error]")
             sys.exit(1)
 
     elif args.command == "update":
         from zotero_mcp.updater import update_zotero_mcp
-
         try:
-            print("Checking for updates...")
+            console.print("[info]Checking for updates...[/info]")
+            result = update_zotero_mcp(check_only=args.check_only, force=args.force, method=args.method)
 
-            result = update_zotero_mcp(
-                check_only=args.check_only,
-                force=args.force,
-                method=args.method
-            )
-
-            print("\n" + "="*50)
-            print("UPDATE RESULTS")
-            print("="*50)
+            console.print(Panel("[bold blue]Update Results[/bold blue]", expand=False))
 
             if args.check_only:
-                print(f"Current version: {result.get('current_version', 'Unknown')}")
-                print(f"Latest version: {result.get('latest_version', 'Unknown')}")
-                print(f"Update needed: {result.get('needs_update', False)}")
-                print(f"Status: {result.get('message', 'Unknown')}")
+                console.print(f"Current version: [blue]{result.get('current_version')}[/blue]")
+                console.print(f"Latest version: [blue]{result.get('latest_version')}[/blue]")
+                console.print(f"Update needed: {'[green]Yes[/green]' if result.get('needs_update') else '[dim]No[/dim]'}")
             else:
                 if result.get('success'):
-                    print("✅ Update completed successfully!")
-                    print(f"Version: {result.get('current_version', 'Unknown')} → {result.get('latest_version', 'Unknown')}")
-                    print(f"Method: {result.get('method', 'Unknown')}")
-                    print(f"Message: {result.get('message', '')}")
-
-                    print("\n📋 Next steps:")
-                    print("• All configurations have been preserved")
-                    print("• Restart Claude Desktop if it's running")
-                    print("• Your semantic search database is intact")
-                    print("• Run 'zotero-mcp version' to verify the update")
+                    console.print("[success]✅ Update completed successfully![/success]")
+                    console.print(f"Version: [blue]{result.get('current_version')}[/blue] → [bold green]{result.get('latest_version')}[/bold green]")
                 else:
-                    print("❌ Update failed!")
-                    print(f"Error: {result.get('message', 'Unknown error')}")
-
-                    if backup_dir := result.get('backup_dir'):
-                        print(f"\n🔄 Backup created at: {backup_dir}")
-                        print("You can manually restore configurations if needed")
-
+                    console.print(f"[error]❌ Update failed: {result.get('message')}[/error]")
                     sys.exit(1)
-
         except Exception as e:
-            print(f"❌ Update error: {e}")
+            console.print(f"[error]❌ Update error: {e}[/error]")
             sys.exit(1)
 
     elif args.command == "serve":
-        # Get transport with a default value if not specified
         transport = getattr(args, "transport", "stdio")
-        # Ensure environment is initialized (Claude config or standalone config)
         setup_zotero_environment()
         if transport == "stdio":
             mcp.run(transport="stdio")
         elif transport == "streamable-http":
-            host = getattr(args, "host", "localhost")
-            port = getattr(args, "port", 8000)
-            mcp.run(transport="streamable-http", host=host, port=port)
+            mcp.run(transport="streamable-http", host=getattr(args, "host", "localhost"), port=getattr(args, "port", 8000))
         elif transport == "sse":
-            host = getattr(args, "host", "localhost")
-            port = getattr(args, "port", 8000)
             import warnings
-            warnings.warn("The SSE transport is deprecated and may be removed in a future version. New applications should use Streamable HTTP transport instead.", UserWarning)
-            mcp.run(transport="sse", host=host, port=port)
+            warnings.warn("SSE transport is deprecated.", UserWarning)
+            mcp.run(transport="sse", host=getattr(args, "host", "localhost"), port=getattr(args, "port", 8000))
 
 
 if __name__ == "__main__":

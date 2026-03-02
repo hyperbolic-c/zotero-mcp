@@ -8,12 +8,102 @@ by finding the installed executable and updating Claude Desktop's config.
 """
 
 import argparse
-import getpass
 import json
 import os
 import shutil
 import sys
 from pathlib import Path
+
+import questionary
+from questionary import Style
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
+console = Console()
+
+# Define custom style for questionary to match the requested UI
+custom_style = Style([
+    ('qmark', 'fg:#00d700 bold'),       # Question mark color (green)
+    ('question', 'bold'),               # Question text
+    ('answer', 'fg:#005fdf bold'),      # Answer text
+    ('pointer', 'fg:#00d700 bold'),      # Pointer (green)
+    ('highlighted', 'fg:#00d700 bold'), # Highlighted item (green)
+    ('selected', 'fg:#00d700'),         # Selected item
+    ('separator', 'fg:#cc5454'),        # Separator
+    ('instruction', 'fg:#8a8a8a'),       # Instruction text
+    ('text', ''),                       # Plain text
+])
+
+class SetupUI:
+    """Helper class to handle the interactive setup UI."""
+    
+    def __init__(self):
+        self.steps = []
+        self.current_step_idx = -1
+
+    def add_step(self, name):
+        self.steps.append(name)
+
+    def start_step(self, name):
+        if name in self.steps:
+            self.current_step_idx = self.steps.index(name)
+        else:
+            self.steps.append(name)
+            self.current_step_idx = len(self.steps) - 1
+        
+        self._print_step_header()
+
+    def _print_step_header(self):
+        # console.clear() # Optional: clear screen for each step
+        print()
+        for i, step in enumerate(self.steps):
+            if i < self.current_step_idx:
+                # Completed step
+                console.print(f"  {step}", style="dim")
+            elif i == self.current_step_idx:
+                # Current step
+                console.print(f"  [bold blue]│[/bold blue]")
+                console.print(f"  [bold blue]◆[/bold blue] [bold]{step}[/bold]")
+                console.print(f"  [bold blue]│[/bold blue]")
+            else:
+                # Future step
+                pass
+
+    def ask_select(self, message, choices, default=None):
+        return questionary.select(
+            message,
+            choices=choices,
+            default=default,
+            style=custom_style,
+            use_indicator=True,
+            pointer='●'
+        ).ask()
+
+    def ask_text(self, message, default="", instruction=None):
+        return questionary.text(
+            message,
+            default=default,
+            instruction=instruction,
+            style=custom_style
+        ).ask()
+
+    def ask_password(self, message, instruction=None):
+        return questionary.password(
+            message,
+            instruction=instruction,
+            style=custom_style
+        ).ask()
+
+    def ask_confirm(self, message, default=True):
+        return questionary.confirm(
+            message,
+            default=default,
+            style=custom_style
+        ).ask()
+
+
+ui = SetupUI()
 
 
 def _obfuscate_sensitive(value: str | None, keep_chars: int = 4) -> str:
@@ -34,7 +124,6 @@ def find_executable():
 
     exe_path = shutil.which(exe_name)
     if exe_path:
-        print(f"Found zotero-mcp in PATH at: {exe_path}")
         return exe_path
 
     # If not found in PATH, try to find it in common installation directories
@@ -42,8 +131,12 @@ def find_executable():
 
     # User site-packages
     import site
-    for site_path in site.getsitepackages():
-        potential_paths.append(Path(site_path) / "bin" / exe_name)
+    try:
+        for site_path in site.getsitepackages():
+            potential_paths.append(Path(site_path) / "bin" / exe_name)
+    except AttributeError:
+        # Some environments might not have getsitepackages
+        pass
 
     # User's home directory
     potential_paths.append(Path.home() / ".local" / "bin" / exe_name)
@@ -59,28 +152,23 @@ def find_executable():
 
     for path in potential_paths:
         if path.exists() and os.access(path, os.X_OK):
-            print(f"Found zotero-mcp at: {path}")
             return str(path)
 
     # If still not found, search in common directories
-    print("Searching for zotero-mcp in common locations...")
     try:
         # On Unix-like systems, try using the 'find' command
         if sys.platform != 'win32':
             import subprocess
             result = subprocess.run(
                 ["find", os.path.expanduser("~"), "-name", "zotero-mcp", "-type", "f", "-executable"],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=5
             )
             paths = result.stdout.strip().split('\n')
             if paths and paths[0]:
-                print(f"Found zotero-mcp at {paths[0]}")
                 return paths[0]
-    except Exception as e:
-        print(f"Error searching for zotero-mcp: {e}")
+    except Exception:
+        pass
 
-    print("Warning: Could not find zotero-mcp executable.")
-    print("Make sure zotero-mcp is installed and in your PATH.")
     return None
 
 
@@ -110,11 +198,9 @@ def find_claude_config():
     # Check all possible locations
     for path in config_paths:
         if path.exists():
-            print(f"Found Claude Desktop config at: {path}")
             return path
 
     # Return the default path for the platform if not found
-    # We'll use the newer "Claude Desktop" path as default
     if sys.platform == "darwin":  # macOS
         default_path = Path.home() / "Library" / "Application Support" / "Claude Desktop" / "claude_desktop_config.json"
     elif sys.platform == "win32":  # Windows
@@ -124,25 +210,12 @@ def find_claude_config():
         config_home = os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')
         default_path = Path(config_home) / "Claude Desktop" / "claude_desktop_config.json"
 
-    print(f"Claude Desktop config not found. Using default path: {default_path}")
     return default_path
 
 def setup_semantic_search(existing_semantic_config: dict = None, semantic_config_only_arg: bool = False) -> dict:
     """Interactive setup for semantic search configuration."""
-    print("\n=== Semantic Search Configuration ===")
+    ui.start_step("Semantic Search Configuration")
     existing_semantic_config = existing_semantic_config or {}
-
-    def _ask_yes_no(prompt: str, default: bool = True) -> bool:
-        suffix = "Y/n" if default else "y/N"
-        while True:
-            raw = input(f"{prompt} [{suffix}]: ").strip().lower()
-            if not raw:
-                return default
-            if raw in {"y", "yes"}:
-                return True
-            if raw in {"n", "no"}:
-                return False
-            print("Please enter y or n")
 
     if existing_semantic_config:
         # Display config without sensitive info
@@ -151,228 +224,166 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
         retriever_mode = existing_semantic_config.get("retriever_mode", "legacy_metadata")
-        print("Found existing semantic search configuration:")
-        print(f"  - Embedding model: {model}")
-        print(f"  - Embedding model name: {name}")
-        print(f"  - Retriever mode: {retriever_mode}")
-        print(f"  - Update frequency: {update_freq}")
-        print(f"  - Zotero database path: {db_path}")
-        print("You can keep it or change it.")
-        print("If you change to a new configuration, a database rebuild is advised.")
-        print("Would you like to keep your existing configuration? (y/n): ", end="")
-        if input().strip().lower() in ['y', 'yes']:
+        
+        console.print(Panel(
+            f"[bold]Current Configuration:[/bold]\n"
+            f"  • Embedding model: [blue]{model}[/blue]\n"
+            f"  • Model name: [blue]{name}[/blue]\n"
+            f"  • Retriever mode: [blue]{retriever_mode}[/blue]\n"
+            f"  • Update frequency: [blue]{update_freq}[/blue]\n"
+            f"  • Zotero DB path: [blue]{db_path}[/blue]",
+            title="Existing Settings",
+            border_style="dim"
+        ))
+        
+        if ui.ask_confirm("Would you like to keep your existing configuration?", default=True):
             return existing_semantic_config
 
-    print("Configure embedding models for semantic search over your Zotero library.")
-
-    # Choose embedding model
-    print("\nAvailable embedding models:")
-    print("1. Default (all-MiniLM-L6-v2) - Free, runs locally")
-    print("2. OpenAI - Better quality, requires API key")
-    print("3. Gemini - Better quality, requires API key")
-
-    while True:
-        choice = input("\nChoose embedding model (1-3): ").strip()
-        if choice in ["1", "2", "3"]:
-            break
-        print("Please enter 1, 2, or 3")
+    ui.start_step("Select Embedding Model")
+    choice = ui.ask_select(
+        "Choose embedding model for semantic search:",
+        choices=[
+            questionary.Choice("Default (all-MiniLM-L6-v2) - Free, runs locally", "1"),
+            questionary.Choice("OpenAI - Better quality, requires API key", "2"),
+            questionary.Choice("Gemini - Better quality, requires API key", "3"),
+        ]
+    )
 
     config = {}
 
     if choice == "1":
         config["embedding_model"] = "default"
-        print("Using default embedding model (all-MiniLM-L6-v2)")
+        console.print("  [green]✓[/green] Using default embedding model (all-MiniLM-L6-v2)")
 
     elif choice == "2":
         config["embedding_model"] = "openai"
-
-        # Choose OpenAI model
-        print("\nOpenAI embedding models:")
-        print("1. text-embedding-3-small (recommended, faster)")
-        print("2. text-embedding-3-large (higher quality, slower)")
-
-        while True:
-            model_choice = input("Choose OpenAI model (1-2): ").strip()
-            if model_choice in ["1", "2"]:
-                break
-            print("Please enter 1 or 2")
+        model_choice = ui.ask_select(
+            "Choose OpenAI model:",
+            choices=[
+                questionary.Choice("text-embedding-3-small (recommended, faster)", "1"),
+                questionary.Choice("text-embedding-3-large (higher quality, slower)", "2"),
+            ]
+        )
 
         if model_choice == "1":
             config["embedding_config"] = {"model_name": "text-embedding-3-small"}
         else:
             config["embedding_config"] = {"model_name": "text-embedding-3-large"}
 
-        # Get API key
-        api_key = getpass.getpass("Enter your OpenAI API key (hidden): ").strip()
+        api_key = ui.ask_password("Enter your OpenAI API key:")
         if api_key:
             config["embedding_config"]["api_key"] = api_key
         else:
-            print("Warning: No API key provided. Set OPENAI_API_KEY environment variable.")
+            console.print("  [yellow]![/yellow] Warning: No API key provided. Set OPENAI_API_KEY environment variable.")
 
-        # Get optional base URL
-        base_url = input("Enter custom OpenAI base URL (leave blank for default): ").strip()
+        base_url = ui.ask_text("Enter custom OpenAI base URL (leave blank for default):")
         if base_url:
             config["embedding_config"]["base_url"] = base_url
-            print(f"Using custom OpenAI base URL: {base_url}")
-        else:
-            print("Using default OpenAI base URL")
 
     elif choice == "3":
         config["embedding_model"] = "gemini"
-
         config["embedding_config"] = {"model_name": "gemini-embedding-001"}
 
-        # Get API key
-        api_key = getpass.getpass("Enter your Gemini API key (hidden): ").strip()
+        api_key = ui.ask_password("Enter your Gemini API key:")
         if api_key:
             config["embedding_config"]["api_key"] = api_key
         else:
-            print("Warning: No API key provided. Set GEMINI_API_KEY environment variable.")
+            console.print("  [yellow]![/yellow] Warning: No API key provided. Set GEMINI_API_KEY environment variable.")
 
-        # Get optional base URL
-        base_url = input("Enter custom Gemini base URL (leave blank for default): ").strip()
+        base_url = ui.ask_text("Enter custom Gemini base URL (leave blank for default):")
         if base_url:
             config["embedding_config"]["base_url"] = base_url
-            print(f"Using custom Gemini base URL: {base_url}")
-        else:
-            print("Using default Gemini base URL")
 
-    # Configure retriever mode
-    print("\n=== Retrieval Mode ===")
-    print("Choose how semantic indexing and retrieval should work:")
-    print("1. legacy_metadata - metadata-only semantic indexing")
-    print("2. legacy_fulltext - legacy mode with optional --fulltext extraction")
-    print("3. advanced_rag - chunked retrieval using MinerU markdown (md_root)")
+    ui.start_step("Retrieval Mode")
     existing_mode = existing_semantic_config.get("retriever_mode", "legacy_metadata")
-    mode_map = {"1": "legacy_metadata", "2": "legacy_fulltext", "3": "advanced_rag"}
-    mode_default_choice = {
-        "legacy_metadata": "1",
-        "legacy_fulltext": "2",
-        "advanced_rag": "3",
-    }.get(existing_mode, "1")
-    while True:
-        mode_choice = input(f"Choose retriever mode [default {mode_default_choice}]: ").strip()
-        if mode_choice == "":
-            mode_choice = mode_default_choice
-        if mode_choice in mode_map:
-            break
-        print("Please enter 1, 2, or 3")
-
-    retriever_mode = mode_map[mode_choice]
+    mode_map = {
+        "legacy_metadata - metadata-only semantic indexing": "legacy_metadata",
+        "legacy_fulltext - legacy mode with optional --fulltext extraction": "legacy_fulltext",
+        "advanced_rag - chunked retrieval using MinerU markdown (md_root)": "advanced_rag"
+    }
+    
+    default_mode_key = next((k for k, v in mode_map.items() if v == existing_mode), list(mode_map.keys())[0])
+    
+    mode_selection = ui.ask_select(
+        "Choose how semantic indexing and retrieval should work:",
+        choices=list(mode_map.keys()),
+        default=default_mode_key
+    )
+    
+    retriever_mode = mode_map[mode_selection]
     config["retriever_mode"] = retriever_mode
 
     if retriever_mode == "advanced_rag":
-        print("\n=== Advanced RAG Settings ===")
+        ui.start_step("Advanced RAG Settings")
         existing_advanced = existing_semantic_config.get("advanced_rag", {})
         default_md_root = existing_advanced.get(
             "md_root",
             str(Path.home() / ".config" / "zotero-mcp" / "md_root")
         )
-        md_root_input = input(f"MinerU markdown root [{default_md_root}]: ").strip()
-        md_root = md_root_input or default_md_root
+        md_root = ui.ask_text("MinerU markdown root:", default=default_md_root)
+        
         if not Path(md_root).exists():
-            print(f"Warning: md_root does not exist yet: {md_root}")
-            print("advanced_rag will fall back to metadata chunks for missing markdown files.")
+            console.print(f"  [yellow]![/yellow] Warning: md_root does not exist: {md_root}")
 
-        # --- Chunking backend ---
-        existing_chunk = existing_advanced.get("chunk", {})
-        print("\nChunking backend:")
-        print("1. langchain (markdown_recursive_v1) - recommended for English papers")
-        print("2. legacy - original character sliding-window")
-        backend_default = existing_chunk.get("backend", "langchain")
-        backend_default_choice = "1" if backend_default == "langchain" else "2"
-        while True:
-            backend_choice = input(f"Choose backend [default {backend_default_choice}]: ").strip() or backend_default_choice
-            if backend_choice in ("1", "2"):
-                break
-            print("Please enter 1 or 2")
+        backend_choice = ui.ask_select(
+            "Choose chunking backend:",
+            choices=[
+                questionary.Choice("langchain (markdown_recursive_v1) - recommended for English papers", "1"),
+                questionary.Choice("legacy - original character sliding-window", "2"),
+            ],
+            default="1" if existing_advanced.get("chunk", {}).get("backend", "langchain") == "langchain" else "2"
+        )
         chunk_backend = "langchain" if backend_choice == "1" else "legacy"
 
         if chunk_backend == "langchain":
-            print("\nChunking strategy:")
-            print("1. markdown_recursive_v1 - stable default")
-            print("2. semantic_v1 - experimental (falls back to markdown_recursive_v1 if unavailable)")
-            strategy_default = existing_chunk.get("strategy", "markdown_recursive_v1")
-            strategy_default_choice = "2" if strategy_default == "semantic_v1" else "1"
-            while True:
-                strategy_choice = input(
-                    f"Choose strategy [default {strategy_default_choice}]: "
-                ).strip() or strategy_default_choice
-                if strategy_choice in ("1", "2"):
-                    break
-                print("Please enter 1 or 2")
+            strategy_choice = ui.ask_select(
+                "Choose chunking strategy:",
+                choices=[
+                    questionary.Choice("markdown_recursive_v1 - stable default", "1"),
+                    questionary.Choice("semantic_v1 - experimental", "2"),
+                ],
+                default="1" if existing_advanced.get("chunk", {}).get("strategy", "markdown_recursive_v1") == "markdown_recursive_v1" else "2"
+            )
             chunk_strategy = "semantic_v1" if strategy_choice == "2" else "markdown_recursive_v1"
 
-            chunk_size_default = existing_chunk.get("chunk_size", 1100)
-            while True:
-                raw = input(f"chunk_size [{chunk_size_default}]: ").strip()
-                if raw == "":
-                    chunk_size = int(chunk_size_default)
-                    break
-                try:
-                    chunk_size = int(raw)
-                    if chunk_size > 0:
-                        break
-                    print("Please enter a positive integer")
-                except ValueError:
-                    print("Please enter a valid number")
-
-            chunk_overlap_default = existing_chunk.get("chunk_overlap", 180)
-            while True:
-                raw = input(f"chunk_overlap [{chunk_overlap_default}]: ").strip()
-                if raw == "":
-                    chunk_overlap = int(chunk_overlap_default)
-                    break
-                try:
-                    chunk_overlap = int(raw)
-                    if chunk_overlap >= 0:
-                        break
-                    print("Please enter a non-negative integer")
-                except ValueError:
-                    print("Please enter a valid number")
+            chunk_size = int(ui.ask_text("chunk_size:", default=str(existing_advanced.get("chunk", {}).get("chunk_size", 1100))))
+            chunk_overlap = int(ui.ask_text("chunk_overlap:", default=str(existing_advanced.get("chunk", {}).get("chunk_overlap", 180))))
 
             chunk_cfg = {
                 "backend": "langchain",
                 "strategy": chunk_strategy,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
-                "min_chunk_chars": existing_chunk.get("min_chunk_chars", 220),
+                "min_chunk_chars": existing_advanced.get("chunk", {}).get("min_chunk_chars", 220),
             }
         else:
-            # legacy: keep old max_chars/overlap_chars fields
             chunk_cfg = {
                 "backend": "legacy",
-                "max_chars": existing_chunk.get("max_chars", 1600),
-                "overlap_chars": existing_chunk.get("overlap_chars", 200),
-                "min_chunk_chars": existing_chunk.get("min_chunk_chars", 120),
-                "heading_first": existing_chunk.get("heading_first", True),
+                "max_chars": existing_advanced.get("chunk", {}).get("max_chars", 1600),
+                "overlap_chars": existing_advanced.get("chunk", {}).get("overlap_chars", 200),
+                "min_chunk_chars": existing_advanced.get("chunk", {}).get("min_chunk_chars", 120),
+                "heading_first": existing_advanced.get("chunk", {}).get("heading_first", True),
             }
 
-        existing_reranker = existing_advanced.get("reranker", {})
-        reranker_enabled = _ask_yes_no(
-            "Enable reranker (flashrank)",
-            default=existing_reranker.get("enabled", True),
+        reranker_enabled = ui.ask_confirm(
+            "Enable reranker (flashrank)?",
+            default=existing_advanced.get("reranker", {}).get("enabled", True),
         )
-        reranker_model_default = existing_reranker.get("model_name", "ms-marco-MiniLM-L-12-v2")
-        reranker_model = input(f"Reranker model [{reranker_model_default}]: ").strip() or reranker_model_default
-        reranker_top_n_default = existing_reranker.get("top_n", 8)
-        while True:
-            raw_top_n = input(f"Reranker top_n [{reranker_top_n_default}]: ").strip()
-            if raw_top_n == "":
-                reranker_top_n = int(reranker_top_n_default)
-                break
-            try:
-                reranker_top_n = int(raw_top_n)
-                if reranker_top_n > 0:
-                    break
-                print("Please enter a positive integer")
-            except ValueError:
-                print("Please enter a valid number")
+        
+        reranker_model = ui.ask_text(
+            "Reranker model:",
+            default=existing_advanced.get("reranker", {}).get("model_name", "ms-marco-MiniLM-L-12-v2")
+        )
+        
+        reranker_top_n = int(ui.ask_text(
+            "Reranker top_n:",
+            default=str(existing_advanced.get("reranker", {}).get("top_n", 8))
+        ))
 
-        reranker_cache_default = existing_reranker.get("local_model_path", "")
-        reranker_cache = input(
-            f"Reranker cache dir [{reranker_cache_default or 'system default'}]: "
-        ).strip()
+        reranker_cache = ui.ask_text(
+            "Reranker cache dir (leave blank for default):",
+            default=existing_advanced.get("reranker", {}).get("local_model_path", "")
+        )
 
         config["advanced_rag"] = {
             "md_root": md_root,
@@ -394,101 +405,51 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
             },
         }
 
-    # Configure update frequency
-    print("\n=== Database Update Configuration ===")
-    print("Configure how often the semantic search database is updated:")
-    print("1. Manual - Update only when you run 'zotero-mcp update-db'")
-    print("2. Auto - Automatically update on server startup")
-    print("3. Daily - Automatically update once per day")
-    print("4. Every N days - Automatically update every N days")
-
-    while True:
-        update_choice = input("\nChoose update frequency (1-4): ").strip()
-        if update_choice in ["1", "2", "3", "4"]:
-            break
-        print("Please enter 1, 2, 3, or 4")
+    ui.start_step("Database Update Configuration")
+    update_choice = ui.ask_select(
+        "Choose update frequency:",
+        choices=[
+            questionary.Choice("Manual - Update only when you run 'zotero-mcp update-db'", "1"),
+            questionary.Choice("Auto - Automatically update on server startup", "2"),
+            questionary.Choice("Daily - Automatically update once per day", "3"),
+            questionary.Choice("Every N days - Automatically update every N days", "4"),
+        ]
+    )
 
     update_config = {}
-
     if update_choice == "1":
-        update_config = {
-            "auto_update": False,
-            "update_frequency": "manual"
-        }
-        print("Database will only be updated manually.")
+        update_config = {"auto_update": False, "update_frequency": "manual"}
     elif update_choice == "2":
-        update_config = {
-            "auto_update": True,
-            "update_frequency": "startup"
-        }
-        print("Database will be updated every time the server starts.")
+        update_config = {"auto_update": True, "update_frequency": "startup"}
     elif update_choice == "3":
-        update_config = {
-            "auto_update": True,
-            "update_frequency": "daily"
-        }
-        print("Database will be updated once per day.")
+        update_config = {"auto_update": True, "update_frequency": "daily"}
     elif update_choice == "4":
-        while True:
-            try:
-                days = int(input("Enter number of days between updates: ").strip())
-                if days > 0:
-                    break
-                print("Please enter a positive number")
-            except ValueError:
-                print("Please enter a valid number")
-
+        days = int(ui.ask_text("Enter number of days between updates:", default="7"))
         update_config = {
             "auto_update": True,
             "update_frequency": f"every_{days}",
             "update_days": days
         }
-        print(f"Database will be updated every {days} days.")
 
-    # Configure extraction settings
     if retriever_mode in {"legacy_metadata", "legacy_fulltext"}:
-        print("\n=== Content Extraction Settings ===")
-        print("Set a page cap for PDF extraction to balance speed vs. coverage.")
-        print("Press Enter to use the default.")
-        default_pdf_max = existing_semantic_config.get("extraction", {}).get("pdf_max_pages", 10) if existing_semantic_config else 10
-        while True:
-            raw = input(f"PDF max pages [{default_pdf_max}]: ").strip()
-            if raw == "":
-                pdf_max_pages = default_pdf_max
-                break
-            try:
-                pdf_max_pages = int(raw)
-                if pdf_max_pages > 0:
-                    break
-                print("Please enter a positive integer")
-            except ValueError:
-                print("Please enter a valid number")
+        ui.start_step("Content Extraction Settings")
+        default_pdf_max = existing_semantic_config.get("extraction", {}).get("pdf_max_pages", 10)
+        pdf_max_pages = int(ui.ask_text("PDF max pages for extraction:", default=str(default_pdf_max)))
         config["extraction"] = {"pdf_max_pages": pdf_max_pages}
 
-    # Configure Zotero database path
-    print("\n=== Zotero Database Path ===")
-    print("By default, zotero-mcp auto-detects the Zotero database location.")
-    print("If Zotero is installed in a custom location, you can specify the path here.")
-    default_db_path = existing_semantic_config.get("zotero_db_path", "") if existing_semantic_config else ""
+    ui.start_step("Zotero Database Path")
+    default_db_path = existing_semantic_config.get("zotero_db_path", "")
     db_path_hint = default_db_path if default_db_path else "auto-detect"
-    raw_db_path = input(f"Zotero database path [{db_path_hint}]: ").strip()
+    raw_db_path = ui.ask_text("Zotero database path (leave blank for auto-detect):", default=default_db_path)
 
-    # Validate path if provided
     zotero_db_path = None
     if raw_db_path:
         db_file = Path(raw_db_path)
         if db_file.exists() and db_file.is_file():
             zotero_db_path = str(db_file)
-            print(f"Using custom Zotero database: {zotero_db_path}")
         else:
-            print(f"Warning: File not found at '{raw_db_path}'. Using auto-detect instead.")
-    elif default_db_path:
-        # Keep existing custom path if user just pressed Enter
-        zotero_db_path = default_db_path
-        print(f"Keeping existing database path: {zotero_db_path}")
-    else:
-        print("Using auto-detect for Zotero database location.")
-
+            console.print(f"  [yellow]![/yellow] Warning: File not found at '{raw_db_path}'. Using auto-detect.")
+    
     config["update_config"] = update_config
     if zotero_db_path:
         config["zotero_db_path"] = zotero_db_path
@@ -499,31 +460,25 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
 def save_semantic_search_config(config: dict, semantic_config_path: Path) -> bool:
     """Save semantic search configuration to file."""
     try:
-        # Ensure config directory exists
         semantic_config_dir = semantic_config_path.parent
         semantic_config_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load existing config or create new one
         full_semantic_config = {}
         if semantic_config_path.exists():
             try:
                 with open(semantic_config_path) as f:
                     full_semantic_config = json.load(f)
             except json.JSONDecodeError:
-                print("Warning: Existing semantic search config file is invalid JSON, creating new one")
+                pass
 
-        # Add semantic search config
         full_semantic_config["semantic_search"] = config
 
-        # Write config
         with open(semantic_config_path, 'w') as f:
             json.dump(full_semantic_config, f, indent=2)
 
-        print(f"Semantic search configuration saved to: {semantic_config_path}")
         return True
-
     except Exception as e:
-        print(f"Error saving semantic search config: {e}")
+        console.print(f"[red]Error saving semantic search config: {e}[/red]")
         return False
 
 def load_semantic_search_config(semantic_config_path: Path) -> dict:
@@ -535,88 +490,59 @@ def load_semantic_search_config(semantic_config_path: Path) -> dict:
         with open(semantic_config_path) as f:
             full_semantic_config = json.load(f)
         return full_semantic_config.get("semantic_search", {})
-    except json.JSONDecodeError as e:
-        print(f"Warning: Could not parse config file as JSON: {e}")
-        return {}
-    except Exception as e:
-        print(f"Warning: Could not read config file: {e}")
+    except Exception:
         return {}
 
 
 def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None):
     """Update Claude Desktop config to add zotero-mcp."""
-    # Create directory if it doesn't exist
     config_dir = config_path.parent
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load existing config or create new one
     if config_path.exists():
         try:
             with open(config_path) as f:
                 config = json.load(f)
-            print(f"Loaded existing config from: {config_path}")
         except json.JSONDecodeError:
-            print(f"Error: Config file at {config_path} is not valid JSON. Creating new config.")
             config = {}
     else:
-        print(f"Creating new config file at: {config_path}")
         config = {}
 
-    # Ensure mcpServers key exists
     if "mcpServers" not in config:
         config["mcpServers"] = {}
 
-    # Create environment settings based on local vs web API
-    env_settings = {
-        "ZOTERO_LOCAL": "true" if local else "false"
-    }
+    env_settings = {"ZOTERO_LOCAL": "true" if local else "false"}
 
-    # Add API key and library settings for web API
     if not local:
-        if api_key:
-            env_settings["ZOTERO_API_KEY"] = api_key
-        if library_id:
-            env_settings["ZOTERO_LIBRARY_ID"] = library_id
-        if library_type:
-            env_settings["ZOTERO_LIBRARY_TYPE"] = library_type
+        if api_key: env_settings["ZOTERO_API_KEY"] = api_key
+        if library_id: env_settings["ZOTERO_LIBRARY_ID"] = library_id
+        if library_type: env_settings["ZOTERO_LIBRARY_TYPE"] = library_type
 
-    # Add semantic search settings if provided
     if semantic_config:
         env_settings["ZOTERO_EMBEDDING_MODEL"] = semantic_config.get("embedding_model", "default")
-
         embedding_config = semantic_config.get("embedding_config", {})
+        
         if semantic_config.get("embedding_model") == "openai":
-            if api_key := embedding_config.get("api_key"):
-                env_settings["OPENAI_API_KEY"] = api_key
-            if model := embedding_config.get("model_name"):
-                env_settings["OPENAI_EMBEDDING_MODEL"] = model
-            if base_url := embedding_config.get("base_url"):
-                env_settings["OPENAI_BASE_URL"] = base_url
-
+            if ak := embedding_config.get("api_key"): env_settings["OPENAI_API_KEY"] = ak
+            if md := embedding_config.get("model_name"): env_settings["OPENAI_EMBEDDING_MODEL"] = md
+            if bu := embedding_config.get("base_url"): env_settings["OPENAI_BASE_URL"] = bu
         elif semantic_config.get("embedding_model") == "gemini":
-            if api_key := embedding_config.get("api_key"):
-                env_settings["GEMINI_API_KEY"] = api_key
-            if model := embedding_config.get("model_name"):
-                env_settings["GEMINI_EMBEDDING_MODEL"] = model
-            if base_url := embedding_config.get("base_url"):
-                env_settings["GEMINI_BASE_URL"] = base_url
+            if ak := embedding_config.get("api_key"): env_settings["GEMINI_API_KEY"] = ak
+            if md := embedding_config.get("model_name"): env_settings["GEMINI_EMBEDDING_MODEL"] = md
+            if bu := embedding_config.get("base_url"): env_settings["GEMINI_BASE_URL"] = bu
 
-    # Add or update zotero config
     config["mcpServers"]["zotero"] = {
         "command": zotero_mcp_path,
         "env": env_settings
     }
 
-    # Write updated config
     try:
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
-        print(f"\nSuccessfully wrote config to: {config_path}")
+        return config_path
     except Exception as e:
-        print(f"Error writing config file: {str(e)}")
+        console.print(f"[red]Error writing config file: {str(e)}[/red]")
         return False
-
-    return config_path
 
 
 def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False) -> Path:
@@ -625,7 +551,6 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = cfg_dir / "config.json"
 
-    # Load or initialize
     full = {}
     if cfg_path.exists():
         try:
@@ -634,24 +559,15 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
         except Exception:
             full = {}
 
-    # Store semantic config if provided
     if semantic_config:
         full["semantic_search"] = semantic_config
 
-    # Provide a helper env section for web-based clients
-    client_env = {
-        "ZOTERO_LOCAL": "true" if local else "false"
-    }
-    # Persist global guard to disable Claude detection/output if requested
-    if no_claude:
-        client_env["ZOTERO_NO_CLAUDE"] = "true"
+    client_env = {"ZOTERO_LOCAL": "true" if local else "false"}
+    if no_claude: client_env["ZOTERO_NO_CLAUDE"] = "true"
     if not local:
-        if api_key:
-            client_env["ZOTERO_API_KEY"] = api_key
-        if library_id:
-            client_env["ZOTERO_LIBRARY_ID"] = library_id
-        if library_type:
-            client_env["ZOTERO_LIBRARY_TYPE"] = library_type
+        if api_key: client_env["ZOTERO_API_KEY"] = api_key
+        if library_id: client_env["ZOTERO_LIBRARY_ID"] = library_id
+        if library_type: client_env["ZOTERO_LIBRARY_TYPE"] = library_type
 
     full["client_env"] = client_env
 
@@ -663,184 +579,132 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
 
 def main(cli_args=None):
     """Main function to run the setup helper."""
-    parser = argparse.ArgumentParser(description="Configure zotero-mcp for Claude Desktop")
-    parser.add_argument("--no-local", action="store_true", help="Configure for Zotero Web API instead of local API")
-    parser.add_argument("--no-claude", action="store_true", help="Don't setup Claude Desktop config: instead store settings in config file.")
-    parser.add_argument("--api-key", help="Zotero API key (only needed with --no-local)")
-    parser.add_argument("--library-id", help="Zotero library ID (only needed with --no-local)")
-    parser.add_argument("--library-type", choices=["user", "group"], default="user",
-                        help="Zotero library type (only needed with --no-local)")
-    parser.add_argument("--config-path", help="Path to Claude Desktop config file")
-    parser.add_argument("--skip-semantic-search", action="store_true",
-                        help="Skip semantic search configuration")
-    parser.add_argument("--semantic-config-only", action="store_true",
-                        help="Only configure semantic search, skip Zotero setup")
+    console.print(Panel.fit(
+        "[bold blue]Zotero MCP Setup[/bold blue]\n"
+        "Configure your Zotero Model Context Protocol server",
+        border_style="blue"
+    ))
 
-    # If this is being called from CLI with existing args
+    parser = argparse.ArgumentParser(description="Configure zotero-mcp for Claude Desktop")
+    parser.add_argument("--no-local", action="store_true")
+    parser.add_argument("--no-claude", action="store_true")
+    parser.add_argument("--api-key")
+    parser.add_argument("--library-id")
+    parser.add_argument("--library-type", choices=["user", "group"], default="user")
+    parser.add_argument("--config-path")
+    parser.add_argument("--skip-semantic-search", action="store_true")
+    parser.add_argument("--semantic-config-only", action="store_true")
+
     if cli_args is not None and hasattr(cli_args, 'no_local'):
         args = cli_args
-        print("Using arguments passed from command line")
     else:
-        # Otherwise parse from command line
         args = parser.parse_args()
-        print("Parsed arguments from command line")
 
-    # Determine config path for semantic search
     semantic_config_dir = Path.home() / ".config" / "zotero-mcp"
     semantic_config_path = semantic_config_dir / "config.json"
     existing_semantic_config = load_semantic_search_config(semantic_config_path)
     semantic_config_changed = False
 
-    # Handle semantic search only configuration
     if args.semantic_config_only:
-        print("Configuring semantic search only...")
         new_semantic_config = setup_semantic_search(existing_semantic_config)
         semantic_config_changed = existing_semantic_config != new_semantic_config
-        # only save if semantic config changed
         if semantic_config_changed:
             if save_semantic_search_config(new_semantic_config, semantic_config_path):
-                print("\nSemantic search configuration complete!")
-                print(f"Configuration saved to: {semantic_config_path}")
-                print("\nTo initialize the database, run: zotero-mcp update-db")
+                console.print("\n[green]✓[/green] Semantic search configuration complete!")
+                console.print(f"  Configuration saved to: [blue]{semantic_config_path}[/blue]")
+                console.print("\n  To initialize the database, run: [bold]zotero-mcp update-db[/bold]")
                 return 0
             else:
-                print("\nSemantic search configuration failed.")
                 return 1
         else:
-            print("\nSemantic search configuration left unchanged.")
+            console.print("\n[dim]Semantic search configuration left unchanged.[/dim]")
             return 0
 
-    # Find zotero-mcp executable
     exe_path = find_executable()
     if not exe_path:
-        print("Error: Could not find zotero-mcp executable.")
+        console.print("[red]Error: Could not find zotero-mcp executable.[/red]")
         return 1
-    print(f"Using zotero-mcp at: {exe_path}")
+    
+    console.print(f"  [green]✓[/green] Found zotero-mcp at: [blue]{exe_path}[/blue]")
 
-    # Find Claude Desktop config unless --no-claude
     config_path = None
     if not args.no_claude:
         config_path = args.config_path
         if not config_path:
             config_path = find_claude_config()
         else:
-            print(f"Using specified config path: {config_path}")
             config_path = Path(config_path)
+        
         if not config_path:
-            print("Error: Could not determine Claude Desktop config path.")
+            console.print("[red]Error: Could not determine Claude Desktop config path.[/red]")
             return 1
+        console.print(f"  [green]✓[/green] Using Claude config at: [blue]{config_path}[/blue]")
 
-    # Update config
     use_local = not args.no_local
     api_key = args.api_key
     library_id = args.library_id
     library_type = args.library_type
 
-    # Configure semantic search if not skipped
     if not args.skip_semantic_search:
-        # if there is already a semantic search configuration in the config file:
-        if existing_semantic_config:
-            print("\nFound an exisiting semantic search configuration in the config file.")
-            print("Would you like to reconfigure semantic search? (y/n): ", end="")
-        # if otherwise, slightly different message...
-        else:
-            print("\nWould you like to configure semantic search? (y/n): ", end="")
-        # Either way:
-        if input().strip().lower() in ['y', 'yes']:
+        prompt_msg = "Reconfigure semantic search?" if existing_semantic_config else "Configure semantic search?"
+        if ui.ask_confirm(prompt_msg, default=True):
             new_semantic_config = setup_semantic_search(existing_semantic_config)
             if existing_semantic_config != new_semantic_config:
                 semantic_config_changed = True
-                existing_semantic_config = new_semantic_config  # Update the config to use
+                existing_semantic_config = new_semantic_config
                 save_semantic_search_config(existing_semantic_config, semantic_config_path)
 
-    print("\nSetup with the following settings:")
-    print(f"  Local API: {use_local}")
-    if not use_local:
-        print(f"  API Key: {_obfuscate_sensitive(api_key)}")
-        print(f"  Library ID: {library_id or 'Not provided'}")
-        print(f"  Library Type: {library_type}")
-
-    # Use the potentially updated semantic config
+    ui.start_step("Finalizing Setup")
     semantic_config = existing_semantic_config
 
-    # Update configuration based on mode
     try:
         if args.no_claude:
             cfg_path = _write_standalone_config(
-                local=use_local,
-                api_key=api_key,
-                library_id=library_id,
-                library_type=library_type,
-                semantic_config=semantic_config,
+                local=use_local, api_key=api_key, library_id=library_id,
+                library_type=library_type, semantic_config=semantic_config,
                 no_claude=args.no_claude
             )
-            print("\nSetup complete (standalone/web mode)!")
-            print(f"Config saved to: {cfg_path}")
-            # Emit one-line client_env for easy copy/paste
+            console.print("\n[bold green]Setup complete (standalone/web mode)![/bold green]")
+            console.print(f"Config saved to: [blue]{cfg_path}[/blue]")
+            
             try:
                 with open(cfg_path) as f:
                     full = json.load(f)
                 env_line = json.dumps(full.get("client_env", {}), separators=(',', ':'))
-                print("Client environment (single-line JSON):")
-                print(env_line)
-            except Exception:
-                pass
+                console.print("\n[bold]Client environment (single-line JSON):[/bold]")
+                console.print(f"  {env_line}")
+            except Exception: pass
+            
             if semantic_config_changed:
-                print("\nNote: You changed semantic search settings. Consider rebuilding the DB:")
-                print("  zotero-mcp update-db --force-rebuild")
+                console.print("\n[yellow]Note:[/yellow] You changed semantic search settings. Consider rebuilding:")
+                console.print("  [bold]zotero-mcp update-db --force-rebuild[/bold]")
             return 0
         else:
             updated_config_path = update_claude_config(
-                config_path,
-                exe_path,
-                local=use_local,
-                api_key=api_key,
-                library_id=library_id,
-                library_type=library_type,
+                config_path, exe_path, local=use_local, api_key=api_key,
+                library_id=library_id, library_type=library_type,
                 semantic_config=semantic_config
             )
             if updated_config_path:
-                print("\nSetup complete!")
-                print("To use Zotero in Claude Desktop:")
-                print("1. Restart Claude Desktop if it's running")
-                print("2. In Claude, type: /tools zotero")
+                console.print("\n[bold green]Setup complete![/bold green]")
+                console.print("\n[bold]To use Zotero in Claude Desktop:[/bold]")
+                console.print("1. Restart Claude Desktop if it's running")
+                console.print("2. In Claude, type: [bold]/tools zotero[/bold]")
+                
                 if semantic_config_changed:
                     mode = semantic_config.get("retriever_mode", "legacy_metadata")
-                    print("\nSemantic Search:")
-                    print("- Configured with", semantic_config.get("embedding_model", "default"), "embedding model")
-                    print("- Retriever mode:", mode)
-                    print("- To change the configuration, run: zotero-mcp setup --semantic-config-only")
-                    print("- The config file is located at: ~/.config/zotero-mcp/config.json")
-                    print("- You may need to rebuild your database: zotero-mcp update-db --force-rebuild")
-                    if mode == "legacy_fulltext":
-                        print("- For legacy full-text extraction, run: zotero-mcp update-db --fulltext")
-                    elif mode == "advanced_rag":
-                        print("- advanced_rag uses md_root markdown files; missing markdown falls back to metadata chunks")
-                else:
-                    mode = semantic_config.get("retriever_mode", "legacy_metadata") if semantic_config else "legacy_metadata"
-                    print("\nSemantic Search:")
-                    print("- To update the database, run: zotero-mcp update-db")
-                    print("- Current retriever mode:", mode)
-                    if mode == "legacy_fulltext":
-                        print("- For legacy full-text extraction, run: zotero-mcp update-db --fulltext")
-                    print("- Use zotero_semantic_search tool in Claude for AI-powered search")
+                    console.print(f"\n[bold]Semantic Search:[/bold]")
+                    console.print(f"• Model: [blue]{semantic_config.get('embedding_model', 'default')}[/blue]")
+                    console.print(f"• Mode: [blue]{mode}[/blue]")
+                    console.print("• Run [bold]zotero-mcp update-db --force-rebuild[/bold] to index your library")
+                
                 if use_local:
-                    print("\nNote: Make sure Zotero desktop is running and the local API is enabled in preferences.")
-                else:
-                    missing = []
-                    if not api_key:
-                        missing.append("API key")
-                    if not library_id:
-                        missing.append("Library ID")
-                    if missing:
-                        print(f"\nWarning: The following required settings for Web API were not provided: {', '.join(missing)}")
-                        print("You may need to set these as environment variables or reconfigure.")
+                    console.print("\n[dim]Note: Make sure Zotero is running and the local API is enabled.[/dim]")
                 return 0
             else:
-                print("\nSetup failed. See errors above.")
                 return 1
     except Exception as e:
-        print(f"\nSetup failed with error: {str(e)}")
+        console.print(f"\n[red]Setup failed with error: {str(e)}[/red]")
         return 1
 
 

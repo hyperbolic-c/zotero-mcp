@@ -74,16 +74,16 @@ class SetupUI:
         return questionary.select(
             message,
             choices=choices,
-            default=default,
+            default=default if default is not None else choices[0] if isinstance(choices[0], str) else choices[0].value,
             style=custom_style,
             use_indicator=True,
-            pointer='●'
+            pointer='❯'
         ).ask()
 
     def ask_text(self, message, default="", instruction=None):
         return questionary.text(
             message,
-            default=default,
+            default=str(default) if default is not None else "",
             instruction=instruction,
             style=custom_style
         ).ask()

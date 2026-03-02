@@ -19,10 +19,11 @@ from questionary import Style
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+from prompt_toolkit.key_binding import KeyBindings
 
 console = Console()
 
-# Define custom style for questionary to match the requested UI
+# Define custom style for questionary
 custom_style = Style([
     ('qmark', 'fg:#00d700 bold'),       # Question mark color (green)
     ('question', 'bold'),               # Question text
@@ -35,16 +36,25 @@ custom_style = Style([
     ('text', ''),                       # Plain text
 ])
 
+def get_cancel_kb():
+    """Create keybindings to handle Esc key for cancelling."""
+    kb = KeyBindings()
+    @kb.add("escape")
+    def _(event):
+        event.app.exit(result=None)
+    return kb
+
 class SetupUI:
     """Helper class to handle the interactive setup UI."""
     
     def __init__(self):
         self.steps = []
         self.current_step_idx = -1
+        self._kb = get_cancel_kb()
 
     def _handle_cancel(self, result):
         if result is None:
-            console.print("\n[yellow]Setup cancelled by user.[/yellow]")
+            console.print("\n[yellow]Setup cancelled.[/yellow]")
             sys.exit(0)
         return result
 
@@ -61,24 +71,17 @@ class SetupUI:
         self._print_step_header()
 
     def _print_step_header(self):
-        # console.clear() # Optional: clear screen for each step
         print()
         for i, step in enumerate(self.steps):
             if i < self.current_step_idx:
-                # Completed step: aligns with the left edge of the diamond
-                console.print(f"  [dim]✔ {step}[/dim]")
+                # Completed step
+                console.print(f"  [green]✔[/green] [dim]{step}[/dim]")
             elif i == self.current_step_idx:
-                # Current step: using 3:2 space ratio to align the line with the diamond's center/right
-                # In most CJK terminals, ◆ is 2-cells wide.
-                # 3 spaces + │ (1-cell) = 4 cells total
-                # 2 spaces + ◆ (2-cells) = 4 cells total
-                # This aligns the vertical line with the right half of the diamond.
-                console.print(f"   [bold blue]│[/bold blue]")
-                console.print(f"  [bold blue]◆[/bold blue] [bold]{step}[/bold]")
-                console.print(f"   [bold blue]│[/bold blue]")
+                # Current step - clear arrow pointer, no vertical line alignment needed
+                console.print(f"  [bold blue]❯ {step}[/bold blue]")
             else:
                 # Future step
-                pass
+                console.print(f"    [dim]{step}[/dim]")
 
     def ask_select(self, message, choices, default=None):
         result = questionary.select(
@@ -87,7 +90,8 @@ class SetupUI:
             default=default if default is not None else choices[0] if isinstance(choices[0], str) else choices[0].value,
             style=custom_style,
             use_indicator=True,
-            pointer='❯'
+            pointer='❯',
+            key_bindings=self._kb
         ).ask()
         return self._handle_cancel(result)
 
@@ -96,7 +100,8 @@ class SetupUI:
             message,
             default=str(default) if default is not None else "",
             instruction=instruction,
-            style=custom_style
+            style=custom_style,
+            key_bindings=self._kb
         ).ask()
         return self._handle_cancel(result)
 
@@ -104,7 +109,8 @@ class SetupUI:
         result = questionary.password(
             message,
             instruction=instruction,
-            style=custom_style
+            style=custom_style,
+            key_bindings=self._kb
         ).ask()
         return self._handle_cancel(result)
 
@@ -112,7 +118,8 @@ class SetupUI:
         result = questionary.confirm(
             message,
             default=default,
-            style=custom_style
+            style=custom_style,
+            key_bindings=self._kb
         ).ask()
         return self._handle_cancel(result)
 
@@ -131,7 +138,6 @@ def _obfuscate_sensitive(value: str | None, keep_chars: int = 4) -> str:
 
 def find_executable():
     """Find the full path to the zotero-mcp executable."""
-    # Try to find the executable in the PATH
     exe_name = "zotero-mcp"
     if sys.platform == "win32":
         exe_name += ".exe"
@@ -140,26 +146,19 @@ def find_executable():
     if exe_path:
         return exe_path
 
-    # If not found in PATH, try to find it in common installation directories
     potential_paths = []
-
-    # User site-packages
     import site
     try:
         for site_path in site.getsitepackages():
             potential_paths.append(Path(site_path) / "bin" / exe_name)
     except AttributeError:
-        # Some environments might not have getsitepackages
         pass
 
-    # User's home directory
     potential_paths.append(Path.home() / ".local" / "bin" / exe_name)
 
-    # Virtual environment
     if "VIRTUAL_ENV" in os.environ:
         potential_paths.append(Path(os.environ["VIRTUAL_ENV"]) / "bin" / exe_name)
 
-    # Additional common locations
     if sys.platform == "darwin":  # macOS
         potential_paths.append(Path("/usr/local/bin") / exe_name)
         potential_paths.append(Path("/opt/homebrew/bin") / exe_name)
@@ -168,9 +167,7 @@ def find_executable():
         if path.exists() and os.access(path, os.X_OK):
             return str(path)
 
-    # If still not found, search in common directories
     try:
-        # On Unix-like systems, try using the 'find' command
         if sys.platform != 'win32':
             import subprocess
             result = subprocess.run(
@@ -190,37 +187,29 @@ def find_claude_config():
     """Find Claude Desktop config file path."""
     config_paths = []
 
-    # macOS
     if sys.platform == "darwin":
-        # Try both old and new paths
         config_paths.append(Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json")
         config_paths.append(Path.home() / "Library" / "Application Support" / "Claude Desktop" / "claude_desktop_config.json")
-
-    # Windows
     elif sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
         if appdata:
             config_paths.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
             config_paths.append(Path(appdata) / "Claude Desktop" / "claude_desktop_config.json")
-
-    # Linux
     else:
         config_home = os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')
         config_paths.append(Path(config_home) / "Claude" / "claude_desktop_config.json")
         config_paths.append(Path(config_home) / "Claude Desktop" / "claude_desktop_config.json")
 
-    # Check all possible locations
     for path in config_paths:
         if path.exists():
             return path
 
-    # Return the default path for the platform if not found
-    if sys.platform == "darwin":  # macOS
+    if sys.platform == "darwin":
         default_path = Path.home() / "Library" / "Application Support" / "Claude Desktop" / "claude_desktop_config.json"
-    elif sys.platform == "win32":  # Windows
+    elif sys.platform == "win32":
         appdata = os.environ.get("APPDATA", "")
         default_path = Path(appdata) / "Claude Desktop" / "claude_desktop_config.json"
-    else:  # Linux and others
+    else:
         config_home = os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')
         default_path = Path(config_home) / "Claude Desktop" / "claude_desktop_config.json"
 
@@ -232,7 +221,6 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
     existing_semantic_config = existing_semantic_config or {}
 
     if existing_semantic_config:
-        # Display config without sensitive info
         model = existing_semantic_config.get("embedding_model", "unknown")
         name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
@@ -614,64 +602,64 @@ def main(cli_args=None):
     else:
         args = parser.parse_args()
 
-    semantic_config_dir = Path.home() / ".config" / "zotero-mcp"
-    semantic_config_path = semantic_config_dir / "config.json"
-    existing_semantic_config = load_semantic_search_config(semantic_config_path)
-    semantic_config_changed = False
-
-    if args.semantic_config_only:
-        new_semantic_config = setup_semantic_search(existing_semantic_config)
-        semantic_config_changed = existing_semantic_config != new_semantic_config
-        if semantic_config_changed:
-            if save_semantic_search_config(new_semantic_config, semantic_config_path):
-                console.print("\n[green]✓[/green] Semantic search configuration complete!")
-                console.print(f"  Configuration saved to: [blue]{semantic_config_path}[/blue]")
-                console.print("\n  To initialize the database, run: [bold]zotero-mcp update-db[/bold]")
-                return 0
-            else:
-                return 1
-        else:
-            console.print("\n[dim]Semantic search configuration left unchanged.[/dim]")
-            return 0
-
-    exe_path = find_executable()
-    if not exe_path:
-        console.print("[red]Error: Could not find zotero-mcp executable.[/red]")
-        return 1
-    
-    console.print(f"  [green]✓[/green] Found zotero-mcp at: [blue]{exe_path}[/blue]")
-
-    config_path = None
-    if not args.no_claude:
-        config_path = args.config_path
-        if not config_path:
-            config_path = find_claude_config()
-        else:
-            config_path = Path(config_path)
-        
-        if not config_path:
-            console.print("[red]Error: Could not determine Claude Desktop config path.[/red]")
-            return 1
-        console.print(f"  [green]✓[/green] Using Claude config at: [blue]{config_path}[/blue]")
-
-    use_local = not args.no_local
-    api_key = args.api_key
-    library_id = args.library_id
-    library_type = args.library_type
-
-    if not args.skip_semantic_search:
-        prompt_msg = "Reconfigure semantic search?" if existing_semantic_config else "Configure semantic search?"
-        if ui.ask_confirm(prompt_msg, default=True):
-            new_semantic_config = setup_semantic_search(existing_semantic_config)
-            if existing_semantic_config != new_semantic_config:
-                semantic_config_changed = True
-                existing_semantic_config = new_semantic_config
-                save_semantic_search_config(existing_semantic_config, semantic_config_path)
-
-    ui.start_step("Finalizing Setup")
-    semantic_config = existing_semantic_config
-
     try:
+        semantic_config_dir = Path.home() / ".config" / "zotero-mcp"
+        semantic_config_path = semantic_config_dir / "config.json"
+        existing_semantic_config = load_semantic_search_config(semantic_config_path)
+        semantic_config_changed = False
+
+        if args.semantic_config_only:
+            new_semantic_config = setup_semantic_search(existing_semantic_config)
+            semantic_config_changed = existing_semantic_config != new_semantic_config
+            if semantic_config_changed:
+                if save_semantic_search_config(new_semantic_config, semantic_config_path):
+                    console.print("\n[green]✓[/green] Semantic search configuration complete!")
+                    console.print(f"  Configuration saved to: [blue]{semantic_config_path}[/blue]")
+                    console.print("\n  To initialize the database, run: [bold]zotero-mcp update-db[/bold]")
+                    return 0
+                else:
+                    return 1
+            else:
+                console.print("\n[dim]Semantic search configuration left unchanged.[/dim]")
+                return 0
+
+        exe_path = find_executable()
+        if not exe_path:
+            console.print("[red]Error: Could not find zotero-mcp executable.[/red]")
+            return 1
+        
+        console.print(f"  [green]✓[/green] Found zotero-mcp at: [blue]{exe_path}[/blue]")
+
+        config_path = None
+        if not args.no_claude:
+            config_path = args.config_path
+            if not config_path:
+                config_path = find_claude_config()
+            else:
+                config_path = Path(config_path)
+            
+            if not config_path:
+                console.print("[red]Error: Could not determine Claude Desktop config path.[/red]")
+                return 1
+            console.print(f"  [green]✓[/green] Using Claude config at: [blue]{config_path}[/blue]")
+
+        use_local = not args.no_local
+        api_key = args.api_key
+        library_id = args.library_id
+        library_type = args.library_type
+
+        if not args.skip_semantic_search:
+            prompt_msg = "Reconfigure semantic search?" if existing_semantic_config else "Configure semantic search?"
+            if ui.ask_confirm(prompt_msg, default=True):
+                new_semantic_config = setup_semantic_search(existing_semantic_config)
+                if existing_semantic_config != new_semantic_config:
+                    semantic_config_changed = True
+                    existing_semantic_config = new_semantic_config
+                    save_semantic_search_config(existing_semantic_config, semantic_config_path)
+
+        ui.start_step("Finalizing Setup")
+        semantic_config = existing_semantic_config
+
         if args.no_claude:
             cfg_path = _write_standalone_config(
                 local=use_local, api_key=api_key, library_id=library_id,
@@ -723,6 +711,9 @@ def main(cli_args=None):
                 return 0
             else:
                 return 1
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup interrupted by user.[/yellow]")
+        return 0
     except Exception as e:
         console.print(f"\n[red]Setup failed with error: {str(e)}[/red]")
         return 1

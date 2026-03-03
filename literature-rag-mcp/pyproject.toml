@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "literature-rag-mcp"
+dynamic = ["version"]
+authors = [{ name = "Liam", email = "liam@example.com" }]
+description = "A Model Context Protocol server for literature RAG"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "fastmcp>=2.14.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+    "flashrank>=0.2.10",
+    "langchain-text-splitters>=0.3",
+    "langchain-community>=0.3",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "black>=23.0.0", "isort>=5.12.0"]
+
+[project.scripts]
+literature-rag = "literature_rag_mcp.cli:main"
+
+[tool.hatch.version]
+path = "src/literature_rag_mcp/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/literature_rag_mcp"]

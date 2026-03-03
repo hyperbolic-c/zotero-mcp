@@ -515,8 +515,7 @@ class LocalZoteroReader:
 
         conn = self._get_connection()
 
-        # Use IN clause to filter by keys - safe since keys are alphanumeric
-        keys_str = ", ".join(f"'{k}'" for k in keys)
+        placeholders = ", ".join("?" * len(keys))
         query = f"""
         SELECT
             i.itemID,
@@ -555,12 +554,12 @@ class LocalZoteroReader:
         LEFT JOIN itemNotes n ON i.itemID = n.parentItemID OR i.itemID = n.itemID
         LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
         LEFT JOIN creators c ON ic.creatorID = c.creatorID
-        WHERE i.key IN ({keys_str})
+        WHERE i.key IN ({placeholders})
         GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
                  title_val.value, abstract_val.value, extra_val.value
         """
 
-        cursor = conn.execute(query)
+        cursor = conn.execute(query, keys)
         items = []
 
         for row in cursor:

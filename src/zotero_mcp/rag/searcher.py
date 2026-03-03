@@ -4,11 +4,10 @@ import logging
 from typing import Any
 
 from zotero_mcp.chroma_client import CHROMA_GET_MAX_BATCH
-from zotero_mcp.local_db import LocalZoteroReader
 from zotero_mcp.utils import format_creators
 
-# Import from compat to allow test monkeypatching
-from .compat import is_local_mode
+# Import compat module (not individual attributes) so monkeypatching propagates
+from . import compat
 
 from .reference_parser import extract_numeric_citation_ids
 from .reranker import CandidateChunk
@@ -107,16 +106,10 @@ class Searcher:
         """Hydrate item metadata from local DB or API."""
         hydrated: dict[str, dict[str, Any]] = {}
 
-        if is_local_mode():
+        if compat.is_local_mode():
             try:
-                with LocalZoteroReader(db_path=self.db_path) as reader:
-                    # Use get_items_by_keys to fetch only needed items
-                    if hasattr(reader, 'get_items_by_keys'):
-                        local_items = reader.get_items_by_keys(item_keys)
-                    else:
-                        # Fallback: get all and filter (old behavior)
-                        local_items = reader.get_items_with_text(include_fulltext=False)
-                        local_items = [item for item in local_items if item.key in set(item_keys)]
+                with compat.LocalZoteroReader(db_path=self.db_path) as reader:
+                    local_items = reader.get_items_by_keys(item_keys)
                 local_by_key = {item.key: item for item in local_items}
                 for item_key in item_keys:
                     local_item = local_by_key.get(item_key)

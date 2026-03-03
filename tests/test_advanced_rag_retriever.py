@@ -148,6 +148,13 @@ class FakeReader:
     def get_items_with_text(self, limit=None, include_fulltext=False):
         return [FakeLocalItem("I1", 1), FakeLocalItem("I2", 2)]
 
+    def get_items_by_keys(self, keys):
+        all_items = {
+            "I1": FakeLocalItem("I1", 1),
+            "I2": FakeLocalItem("I2", 2),
+        }
+        return [all_items[k] for k in keys if k in all_items]
+
     def _iter_parent_attachments(self, parent_item_id):
         if parent_item_id == 1:
             yield ("ATT1", "storage:a.pdf", "application/pdf")
@@ -187,7 +194,7 @@ def test_ingest_warns_when_md_root_empty(monkeypatch, caplog, tmp_path):
     client = FakeChromaClient()
     retriever = _build_advanced_retriever(engine, client)
 
-    with caplog.at_level(logging.WARNING, logger="zotero_mcp.rag.advanced_rag"):
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.rag.ingestor"):
         retriever.ingest_data()
 
     assert any("md_root" in record.message for record in caplog.records), (
@@ -235,7 +242,7 @@ def test_ingest_logs_item_errors(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(retriever, "_build_item_chunks", _broken_build)
 
-    with caplog.at_level(logging.WARNING, logger="zotero_mcp.rag.advanced_rag"):
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.rag.ingestor"):
         stats = retriever.ingest_data()
 
     assert stats["errors"] == 1
@@ -622,12 +629,14 @@ def test_flush_batch_splits_oversized_single_item_batch(monkeypatch, tmp_path):
     than ChromaDB's hard limit (e.g. 45779 > 5461).  The fix must ensure that
     upsert_documents is never called with more than CHROMA_MAX_BATCH ids at once.
     """
-    from zotero_mcp.rag import advanced_rag
-    from zotero_mcp.rag.advanced_rag import CHROMA_MAX_BATCH
+    from zotero_mcp.rag import advanced_rag, ingestor
 
     # Use a tiny limit so we can exercise the split without huge data
     tiny_limit = 5
+    # Patch both modules: advanced_rag re-exports CHROMA_MAX_BATCH from ingestor,
+    # and Ingestor._flush_batch reads the constant from ingestor module scope.
     monkeypatch.setattr(advanced_rag, "CHROMA_MAX_BATCH", tiny_limit)
+    monkeypatch.setattr(ingestor, "CHROMA_MAX_BATCH", tiny_limit)
 
     # Build n_chunks > tiny_limit docs/metas/ids to simulate an oversized single-item batch
     n_chunks = tiny_limit * 3 + 1  # e.g. 16 > 5
@@ -654,6 +663,45 @@ def test_flush_batch_splits_oversized_single_item_batch(monkeypatch, tmp_path):
             f"Single upsert call exceeded limit: {len(call_ids)} > {tiny_limit}"
         )
     assert stats["added_chunks"] == n_chunks
+
+
+# ---------------------------------------------------------------------------
+# _flush_batch delegation
+# ---------------------------------------------------------------------------
+
+
+def test_facade_flush_batch_delegates_to_ingestor(tmp_path):
+    """AdvancedRAGRetriever._flush_batch must delegate to self._ingestor.flush_batch.
+
+    The facade must not implement flush logic itself - it must delegate to the
+    Ingestor to avoid duplicated code.
+    """
+    engine = FakeEngine(str(tmp_path))
+    client = FakeChromaClient()
+    retriever = _build_advanced_retriever(engine, client)
+
+    # Track calls to Ingestor.flush_batch
+    flush_calls: list[dict] = []
+    original_flush = retriever._ingestor.flush_batch
+
+    def tracking_flush_batch(batch_docs, batch_metas, batch_ids, stats):
+        flush_calls.append({"docs": batch_docs, "ids": batch_ids})
+        original_flush(batch_docs, batch_metas, batch_ids, stats)
+
+    retriever._ingestor.flush_batch = tracking_flush_batch
+
+    docs = ["doc1", "doc2"]
+    metas = [{"item_key": "I1"}, {"item_key": "I1"}]
+    ids = ["I1:ATT1:0", "I1:ATT1:1"]
+    stats = {"added_chunks": 0, "updated_chunks": 0}
+
+    retriever._flush_batch(docs, metas, ids, stats)
+
+    assert len(flush_calls) == 1, (
+        "AdvancedRAGRetriever._flush_batch must delegate to self._ingestor.flush_batch exactly once"
+    )
+    assert flush_calls[0]["ids"] == ids, "flush_batch must pass the same ids to Ingestor"
+    assert stats["added_chunks"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -838,3 +886,92 @@ def test_force_rebuild_resets_both_collections(monkeypatch, tmp_path):
     retriever.ingest_data(force_rebuild=True)
     assert len(chunks_resets) == 1, "Expected chunks collection to be reset on force_rebuild"
     assert len(refs_resets) == 1, "Expected refs collection to be reset on force_rebuild"
+
+
+# ---------------------------------------------------------------------------
+# Searcher compat import tests
+# ---------------------------------------------------------------------------
+
+
+def test_search_uses_compat_local_reader_monkeypatch(monkeypatch, tmp_path):
+    """Monkeypatching advanced_rag.LocalZoteroReader must affect _hydrate_items in Searcher.
+
+    This verifies that searcher.py uses the compat module (not a direct import)
+    so that test monkeypatching via advanced_rag.LocalZoteroReader propagates correctly.
+    """
+    from zotero_mcp.rag import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+
+    reader_was_called = []
+
+    class TrackingReader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            reader_was_called.append(True)
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get_items_by_keys(self, keys):
+            return [
+                FakeLocalItem(k, i) for i, k in enumerate(keys)
+            ]
+
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", TrackingReader)
+
+    engine = FakeEngine(str(tmp_path / "md"))
+    client = FakeChromaClient()
+    retriever = _build_advanced_retriever(engine, client)
+
+    retriever.search("test query", limit=2)
+
+    assert reader_was_called, (
+        "TrackingReader was never instantiated during search._hydrate_items. "
+        "This means searcher.py is not using compat.LocalZoteroReader — "
+        "monkeypatching advanced_rag.LocalZoteroReader has no effect on the Searcher."
+    )
+
+
+def test_hydrate_items_uses_get_items_by_keys(monkeypatch, tmp_path):
+    """_hydrate_items must call get_items_by_keys with only the requested keys.
+
+    This verifies that the optimized path (not the O(n) full-scan fallback) is taken.
+    """
+    from zotero_mcp.rag import advanced_rag
+
+    monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
+
+    fetched_keys: list[list[str]] = []
+
+    class KeyTrackingReader:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get_items_by_keys(self, keys):
+            fetched_keys.append(list(keys))
+            return [FakeLocalItem(k, i) for i, k in enumerate(keys)]
+
+    monkeypatch.setattr(advanced_rag, "LocalZoteroReader", KeyTrackingReader)
+
+    engine = FakeEngine(str(tmp_path / "md"))
+    client = FakeChromaClient()
+    retriever = _build_advanced_retriever(engine, client)
+
+    # FakeChromaClient.search returns items I1 and I2
+    retriever.search("test query", limit=2)
+
+    assert len(fetched_keys) == 1, "Expected exactly one get_items_by_keys call"
+    # Keys should be only the keys from search results, not all items
+    assert set(fetched_keys[0]) == {"I1", "I2"}, (
+        f"Expected keys={{I1, I2}}, got {set(fetched_keys[0])}"
+    )

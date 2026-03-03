@@ -188,18 +188,6 @@ class AdvancedRAGRetriever(BaseRetriever):
     ) -> None:
         """Flush batch to ChromaDB (backward compatibility for tests).
 
-        Uses module-level CHROMA_MAX_BATCH imported from ingestor.
+        Delegates to Ingestor.flush_batch to avoid duplicated logic.
         """
-        existing_ids = self.chroma_client.get_existing_ids(batch_ids)
-        for start in range(0, len(batch_ids), CHROMA_MAX_BATCH):
-            end = start + CHROMA_MAX_BATCH
-            self.chroma_client.upsert_documents(
-                batch_docs[start:end],
-                batch_metas[start:end],
-                batch_ids[start:end],
-            )
-        for doc_id in batch_ids:
-            if doc_id in existing_ids:
-                stats["updated_chunks"] += 1
-            else:
-                stats["added_chunks"] += 1
+        self._ingestor.flush_batch(batch_docs, batch_metas, batch_ids, stats)

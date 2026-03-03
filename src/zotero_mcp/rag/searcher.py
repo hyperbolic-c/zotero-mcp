@@ -12,6 +12,7 @@ from .compat import is_local_mode
 
 from .reference_parser import extract_numeric_citation_ids
 from .reranker import CandidateChunk
+from .utils import parse_creators_string
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +35,9 @@ class Searcher:
         self.config = config
         self.reranker = reranker
         self.get_item_by_key_fn = get_item_by_key_fn
-        self.parse_creators_fn = parse_creators_fn or self._default_parse_creators_string
+        self.parse_creators_fn = parse_creators_fn or parse_creators_string
         self.db_path = db_path
         self.retrieve_cfg = config.get("retrieve", {})
-
-    @staticmethod
-    def _default_parse_creators_string(creators_str: str) -> list[dict[str, str]]:
-        if not creators_str:
-            return []
-        creators: list[dict[str, str]] = []
-        for creator in creators_str.split(";"):
-            creator = creator.strip()
-            if not creator:
-                continue
-            if "," in creator:
-                last, first = creator.split(",", 1)
-                creators.append(
-                    {
-                        "creatorType": "author",
-                        "firstName": first.strip(),
-                        "lastName": last.strip(),
-                    }
-                )
-            else:
-                creators.append({"creatorType": "author", "name": creator})
-        return creators
 
     def _refs_get_by_ids(self, ids: list[str]) -> dict[str, list[Any]]:
         """Fetch reference documents by IDs in batches."""
@@ -131,7 +110,13 @@ class Searcher:
         if is_local_mode():
             try:
                 with LocalZoteroReader(db_path=self.db_path) as reader:
-                    local_items = reader.get_items_with_text(include_fulltext=False)
+                    # Use get_items_by_keys to fetch only needed items
+                    if hasattr(reader, 'get_items_by_keys'):
+                        local_items = reader.get_items_by_keys(item_keys)
+                    else:
+                        # Fallback: get all and filter (old behavior)
+                        local_items = reader.get_items_with_text(include_fulltext=False)
+                        local_items = [item for item in local_items if item.key in set(item_keys)]
                 local_by_key = {item.key: item for item in local_items}
                 for item_key in item_keys:
                     local_item = local_by_key.get(item_key)

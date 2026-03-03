@@ -18,6 +18,7 @@ from zotero_mcp.utils import format_creators, IndexingProgress
 from . import compat
 
 from .chunkers import get_chunking_backend
+from .utils import parse_creators_string
 
 logger = logging.getLogger(__name__)
 
@@ -70,32 +71,10 @@ class Ingestor:
         self.db_path = db_path
         self.config_path = config_path
         self.get_items_from_source_fn = get_items_from_source_fn
-        self.parse_creators_fn = parse_creators_fn or self._default_parse_creators_string
+        self.parse_creators_fn = parse_creators_fn or parse_creators_string
         self.chunk_cfg = config.get("chunk", {})
         self.ingest_cfg = config.get("ingest", {})
         self._chunking_backend = get_chunking_backend(self.chunk_cfg)
-
-    @staticmethod
-    def _default_parse_creators_string(creators_str: str) -> list[dict[str, str]]:
-        if not creators_str:
-            return []
-        creators: list[dict[str, str]] = []
-        for creator in creators_str.split(";"):
-            creator = creator.strip()
-            if not creator:
-                continue
-            if "," in creator:
-                last, first = creator.split(",", 1)
-                creators.append(
-                    {
-                        "creatorType": "author",
-                        "firstName": first.strip(),
-                        "lastName": last.strip(),
-                    }
-                )
-            else:
-                creators.append({"creatorType": "author", "name": creator})
-        return creators
 
     def _build_meta_text(self, item: dict[str, Any]) -> str:
         data = item.get("data", {})
@@ -389,12 +368,26 @@ class Ingestor:
             else:
                 stats["added_chunks"] += 1
 
-    def _flush_refs_batch(
+    def flush_batch(
+        self,
+        batch_docs: list[str],
+        batch_metas: list[dict[str, Any]],
+        batch_ids: list[str],
+        stats: dict[str, Any],
+    ) -> None:
+        """Flush document batch to ChromaDB.
+
+        Public wrapper around _flush_batch.
+        """
+        self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
+
+    def flush_refs_batch(
         self,
         ref_docs: list[str],
         ref_metas: list[dict[str, Any]],
         ref_ids: list[str],
     ) -> None:
+        """Flush reference batch to ChromaDB."""
         if not ref_ids:
             return
         for start in range(0, len(ref_ids), CHROMA_MAX_BATCH):
@@ -408,8 +401,15 @@ class Ingestor:
         self,
         force_rebuild: bool = False,
         limit: int | None = None,
+        build_chunks_fn: Any = None,
     ) -> dict[str, Any]:
-        """Ingest items into the vector database."""
+        """Ingest items into the vector database.
+
+        Args:
+            force_rebuild: If True, reset collections before indexing.
+            limit: Limit number of items to index.
+            build_chunks_fn: Optional callback to build chunks, for testing.
+        """
         start_time = datetime.now()
         stats = {
             "total_items": 0,
@@ -490,7 +490,8 @@ class Ingestor:
                             logger.warning("Error cleaning up old chunks for item %s: %s", item_key, exc)
 
                     # 2. Build new chunks
-                    docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
+                    build_fn = build_chunks_fn or self._build_item_chunks
+                    docs, metas, ids, ref_docs, ref_metas, ref_ids = build_fn(
                         item, attachment_map.get(item_key, [])
                     )
                     if not docs:
@@ -518,7 +519,7 @@ class Ingestor:
 
                     if len(batch_ids) >= batch_size:
                         self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-                        self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+                        self.flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
                         batch_docs.clear()
                         batch_metas.clear()
                         batch_ids.clear()
@@ -538,7 +539,7 @@ class Ingestor:
 
         if batch_ids:
             self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-            self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+            self.flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
 
         end_time = datetime.now()
         stats["duration"] = str(end_time - start_time)

@@ -16,15 +16,9 @@ from .base import BaseRetriever
 from .compat import is_local_mode, LocalZoteroReader
 
 # Re-export for backward compatibility with tests
-from .ingestor import Ingestor
+from .ingestor import CHROMA_MAX_BATCH, Ingestor
 from .reranker import CandidateChunk, Reranker
 from .searcher import Searcher
-
-# Import CHROMA_MAX_BATCH from ingestor but also define it here for test compatibility
-from .ingestor import _compute_chroma_max_batch
-
-# Define CHROMA_MAX_BATCH at module level for test compatibility
-CHROMA_MAX_BATCH: int = _compute_chroma_max_batch()
 
 logger = logging.getLogger(__name__)
 
@@ -97,16 +91,6 @@ class AdvancedRAGRetriever(BaseRetriever):
         # Backward compatibility: expose reranker for tests
         self._ranker = self.reranker._ranker
 
-        # Cache config for backward compatibility
-        self.chunk_cfg = self.config.get("chunk", {})
-        self.retrieve_cfg = self.config.get("retrieve", {})
-        self.ingest_cfg = self.config.get("ingest", {})
-        self.reranker_cfg = self.config.get("reranker", {})
-
-        # Expose chunking backend for _build_item_chunks method
-        from .chunkers import get_chunking_backend
-        self._chunking_backend = get_chunking_backend(self.chunk_cfg)
-
     def ingest_data(
         self,
         force_rebuild: bool = False,
@@ -115,147 +99,16 @@ class AdvancedRAGRetriever(BaseRetriever):
     ) -> dict[str, Any]:
         """Ingest data into the vector database.
 
-        This method is implemented in AdvancedRAGRetriever to maintain backward
-        compatibility with tests that monkeypatch _build_item_chunks.
+        This method delegates to Ingestor.ingest() for the actual implementation.
+        Passes self._build_item_chunks to maintain test monkeypatch compatibility.
         """
         del extract_fulltext
-        from datetime import datetime
-
-        start_time = datetime.now()
-        stats = {
-            "total_items": 0,
-            "processed_items": 0,
-            "added_chunks": 0,
-            "updated_chunks": 0,
-            "skipped_items": 0,
-            "errors": 0,
-            "retriever_mode": "advanced_rag",
-        }
-
-        md_root = self.config.get("md_root", "")
-        if not md_root:
-            logger.warning(
-                "advanced_rag md_root is not configured. All items will be indexed as "
-                "metadata-only chunks (no full-text content). "
-                "Set 'semantic_search.advanced_rag.md_root' in your config file "
-                "(e.g. ~/.config/zotero-mcp/config.json)."
-            )
-
-        if force_rebuild:
-            self.chroma_client.reset_collection()
-            if self.refs_client is not self.chroma_client:
-                self.refs_client.reset_collection()
-
-        # Primary path: read items + attachments from local SQLite
-        try:
-            items, attachment_map = self._ingestor._fetch_items_and_attachments_from_local_db(limit=limit)
-        except Exception as exc:
-            logger.warning(
-                "Local Zotero DB unavailable (%s), falling back to HTTP API",
-                exc,
-            )
-            if self.get_items_from_source_fn is None:
-                raise
-            items = self.get_items_from_source_fn(limit=limit, extract_fulltext=False)
-            attachment_map = self._ingestor._collect_attachment_map(limit=limit)
-
-        stats["total_items"] = len(items)
-
-        batch_docs: list[str] = []
-        batch_metas: list[dict[str, Any]] = []
-        batch_ids: list[str] = []
-        batch_ref_docs: list[str] = []
-        batch_ref_metas: list[dict[str, Any]] = []
-        batch_ref_ids: list[str] = []
-        batch_size = int(self.ingest_cfg.get("batch_size", 500))
-        sleep_seconds = float(self.ingest_cfg.get("sleep_between_batches", 1.0))
-
-        # Import IndexingProgress locally to avoid import cycle
-        from zotero_mcp.utils import IndexingProgress
-
-        with IndexingProgress(
-            description=f"Indexing {stats['total_items']} items",
-            total=stats["total_items"],
-        ) as progress:
-            for item in items:
-                try:
-                    item_key = item.get("key", "")
-                    if not item_key:
-                        stats["skipped_items"] += 1
-                        progress.update(
-                            indexed=stats["processed_items"],
-                            skipped=stats["skipped_items"],
-                            errors=stats["errors"]
-                        )
-                        continue
-
-                    # Clean up old chunks for this item
-                    if not force_rebuild:
-                        try:
-                            self.chroma_client.delete_by_item_key(item_key)
-                            if self.refs_client is not self.chroma_client:
-                                self.refs_client.delete_by_metadata({"item_key": item_key})
-                        except Exception as exc:
-                            logger.warning("Error cleaning up old chunks for item %s: %s", item_key, exc)
-
-                    # Build new chunks - use self._build_item_chunks for test monkeypatch compatibility
-                    # Note: Call through self._build_item_chunks so test monkeypatch works
-                    docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
-                        item, attachment_map.get(item_key, [])
-                    )
-                    if not docs:
-                        stats["skipped_items"] += 1
-                        progress.update(
-                            indexed=stats["processed_items"],
-                            skipped=stats["skipped_items"],
-                            errors=stats["errors"]
-                        )
-                        continue
-
-                    batch_docs.extend(docs)
-                    batch_metas.extend(metas)
-                    batch_ids.extend(ids)
-                    batch_ref_docs.extend(ref_docs)
-                    batch_ref_metas.extend(ref_metas)
-                    batch_ref_ids.extend(ref_ids)
-                    stats["processed_items"] += 1
-
-                    progress.update(
-                        indexed=stats["processed_items"],
-                        skipped=stats["skipped_items"],
-                        errors=stats["errors"]
-                    )
-
-                    if len(batch_ids) >= batch_size:
-                        self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-                        self._ingestor._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
-                        batch_docs.clear()
-                        batch_metas.clear()
-                        batch_ids.clear()
-                        batch_ref_docs.clear()
-                        batch_ref_metas.clear()
-                        batch_ref_ids.clear()
-                        if sleep_seconds > 0:
-                            time.sleep(sleep_seconds)
-                except Exception as exc:
-                    stats["errors"] += 1
-                    logger.warning("Error processing item %s: %s", item.get("key", "?"), exc, exc_info=True)
-                    progress.update(
-                        indexed=stats["processed_items"],
-                        skipped=stats["skipped_items"],
-                        errors=stats["errors"]
-                    )
-
-        if batch_docs:
-            self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-            self._ingestor._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
-
-        end_time = datetime.now()
-        stats["duration"] = str(end_time - start_time)
-        stats["start_time"] = start_time.isoformat()
-        stats["end_time"] = end_time.isoformat()
-
-        return stats
+        # Delegate to Ingestor, passing self._build_item_chunks for test compatibility
+        return self._ingestor.ingest(
+            force_rebuild=force_rebuild,
+            limit=limit,
+            build_chunks_fn=self._build_item_chunks,
+        )
 
     def search(
         self,
@@ -335,15 +188,11 @@ class AdvancedRAGRetriever(BaseRetriever):
     ) -> None:
         """Flush batch to ChromaDB (backward compatibility for tests).
 
-        Uses module-level CHROMA_MAX_BATCH to support test monkeypatching.
+        Uses module-level CHROMA_MAX_BATCH imported from ingestor.
         """
-        # Import from module directly to pick up any monkeypatched value
-        import zotero_mcp.rag.advanced_rag as advanced_rag_module
-        MAX_BATCH = advanced_rag_module.CHROMA_MAX_BATCH
-
         existing_ids = self.chroma_client.get_existing_ids(batch_ids)
-        for start in range(0, len(batch_ids), MAX_BATCH):
-            end = start + MAX_BATCH
+        for start in range(0, len(batch_ids), CHROMA_MAX_BATCH):
+            end = start + CHROMA_MAX_BATCH
             self.chroma_client.upsert_documents(
                 batch_docs[start:end],
                 batch_metas[start:end],

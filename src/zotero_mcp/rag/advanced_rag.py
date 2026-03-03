@@ -16,15 +16,9 @@ from .base import BaseRetriever
 from .compat import is_local_mode, LocalZoteroReader
 
 # Re-export for backward compatibility with tests
-from .ingestor import Ingestor
+from .ingestor import CHROMA_MAX_BATCH, Ingestor
 from .reranker import CandidateChunk, Reranker
 from .searcher import Searcher
-
-# Import CHROMA_MAX_BATCH from ingestor but also define it here for test compatibility
-from .ingestor import _compute_chroma_max_batch
-
-# Define CHROMA_MAX_BATCH at module level for test compatibility
-CHROMA_MAX_BATCH: int = _compute_chroma_max_batch()
 
 logger = logging.getLogger(__name__)
 
@@ -335,15 +329,11 @@ class AdvancedRAGRetriever(BaseRetriever):
     ) -> None:
         """Flush batch to ChromaDB (backward compatibility for tests).
 
-        Uses module-level CHROMA_MAX_BATCH to support test monkeypatching.
+        Uses module-level CHROMA_MAX_BATCH imported from ingestor.
         """
-        # Import from module directly to pick up any monkeypatched value
-        import zotero_mcp.rag.advanced_rag as advanced_rag_module
-        MAX_BATCH = advanced_rag_module.CHROMA_MAX_BATCH
-
         existing_ids = self.chroma_client.get_existing_ids(batch_ids)
-        for start in range(0, len(batch_ids), MAX_BATCH):
-            end = start + MAX_BATCH
+        for start in range(0, len(batch_ids), CHROMA_MAX_BATCH):
+            end = start + CHROMA_MAX_BATCH
             self.chroma_client.upsert_documents(
                 batch_docs[start:end],
                 batch_metas[start:end],

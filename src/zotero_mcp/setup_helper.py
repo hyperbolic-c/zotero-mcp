@@ -198,7 +198,13 @@ def setup_semantic_search(existing_semantic_config: dict = None, semantic_config
 
     if existing_semantic_config:
         model = existing_semantic_config.get("embedding_model", "unknown")
-        name = existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown")
+        # Map embedding model to display name
+        model_display_names = {
+            "default": "all-MiniLM-L6-v2",
+            "openai": existing_semantic_config.get("embedding_config", {}).get("model_name", "OpenAI"),
+            "gemini": existing_semantic_config.get("embedding_config", {}).get("model_name", "Gemini"),
+        }
+        name = model_display_names.get(model, existing_semantic_config.get("embedding_config", {}).get("model_name", "unknown"))
         update_freq = existing_semantic_config.get("update_config", {}).get("update_frequency", "unknown")
         db_path = existing_semantic_config.get("zotero_db_path", "auto-detect")
         retriever_mode = existing_semantic_config.get("retriever_mode", "legacy_metadata")

@@ -28,15 +28,44 @@ Zotero MCP 支持两种检索模式：
 │    ├── semantic_search.py → 搜索入口，协调 retriever 与结果处理    │
 │    └── chroma_client.py   → ChromaDB 底层封装                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Retriever Layer (retrievers/)                                     │
-│    ├── factory.py        → Retriever 工厂，根据 mode 创建实例      │
-│    ├── base.py           → BaseRetriever 抽象接口                  │
-│    ├── legacy.py         → LegacyRetriever（元数据/全文模式）      │
-│    ├── advanced_rag.py   → AdvancedRAGRetriever（推荐模式）        │
-│    ├── chunkers.py       → 文档分块策略                            │
-│    └── reference_parser.py → 参考文献解析与分离                    │
+│  RAG Module (rag/)                                                  │
+│    ├── advanced_rag.py   → Facade 入口，协调 Ingestor/Searcher     │
+│    ├── ingestor.py       → 数据索引（从 SQLite 读取并写入 ChromaDB）│
+│    ├── searcher.py       → 语义搜索、结果聚合、引用解析            │
+│    ├── reranker.py       → FlashRank 重排序                       │
+│    ├── chunkers.py       → 文档分块策略                           │
+│    ├── reference_parser.py → 参考文献解析与分离                    │
+│    ├── compat.py         → 测试用 monkeypatch 兼容层               │
+│    └── utils.py          → 共享工具函数                           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Facade 模式
+
+`AdvancedRAGRetriever` 作为 Facade，协调三个子模块：
+
+```
+AdvancedRAGRetriever (Facade)
+    │
+    ├── Ingestor (数据索引)
+    │     ├── _fetch_items_and_attachments_from_local_db()
+    │     ├── _build_item_chunks()
+    │     ├── _flush_batch()
+    │     └── ingest()
+    │
+    ├── Searcher (语义搜索)
+    │     ├── _hydrate_items()
+    │     ├── _resolve_citations()
+    │     └── search()
+    │
+    └── Reranker (重排序)
+          └── rerank()
+```
+
+**设计原则**：
+- Facade 层只做委托，不承载业务逻辑
+- 子模块各自独立，通过 Facade 组合
+- 通过 `compat.py` 支持测试 monkeypatch
 
 ## 3. 数据流
 
@@ -49,7 +78,7 @@ Zotero SQLite (本地模式)
 LocalZoteroReader.get_items_with_text()
          │
          ▼
-AdvancedRAGRetriever._fetch_items_and_attachments_from_local_db()
+Ingestor._fetch_items_and_attachments_from_local_db()
          │
          ▼
 对每个 item:
@@ -73,6 +102,9 @@ AdvancedRAGRetriever._fetch_items_and_attachments_from_local_db()
 用户查询
    │
    ▼
+Searcher.search()
+   │
+   ▼
 ChromaDB ANN 搜索 (zotero_rag_chunks_v1)
    │
    ▼
@@ -87,6 +119,19 @@ FlashRank Rerank（可选）
    ▼
 返回结果（含 resolved_citations）
 ```
+
+### 3.3 性能优化
+
+**本地模式 SQL 查询优化**：
+
+- `_hydrate_items()` 使用 `LocalZoteroReader.get_items_by_keys()` 按 key 批量查询
+- 使用参数化查询防止 SQL 注入
+- 避免全表扫描：`get_items_with_text()` → `get_items_by_keys(item_keys)`
+
+**ChromaDB 批处理**：
+
+- `CHROMA_MAX_BATCH` 根据 SQLite `MAX_VARIABLE_NUMBER // 6` 动态计算
+- 超过限制时自动分片写入
 
 ## 4. 关键模块
 
@@ -104,7 +149,7 @@ class ChunkingBackend(ABC):
 | `LegacyChunkingBackend` | 原始滑动窗口 | 按 `#` 标题分割章节，再按固定长度滑动 |
 | `LangChainMarkdownRecursiveChunker` | `markdown_recursive_v1` | MarkdownHeaderTextSplitter + RecursiveCharacterTextSplitter |
 
-**默认配置**（`indexer.py:get_advanced_rag_defaults()`）：
+**默认配置**：
 
 ```python
 chunk = {
@@ -141,17 +186,45 @@ chunk = {
 
 **存储设计**：参考文献存入独立的 `zotero_rag_refs_v1` 集合，**使用全零向量**（`upsert_raw`），检索时通过精确 ID 查找，而非语义相似度搜索。这样避免参考文献污染主搜索结果。
 
-### 4.3 advanced_rag.py - 核心检索逻辑
+### 4.3 advanced_rag.py - Facade 入口
 
 ```python
-class AdvancedRAGRetriever:
-    def _build_item_chunks(item, attachment_keys) -> (
-        docs, metas, ids,           # 主集合
-        ref_docs, ref_metas, ref_ids  # 引用集合
-    ): ...
+class AdvancedRAGRetriever(BaseRetriever):
+    """Facade combining Ingestor, Searcher, and Reranker."""
 
-    def _flush_batch(...): ...      # 批量写入 ChromaDB
+    def ingest_data(force_rebuild=False, limit=None):
+        # 委托给 Ingestor.ingest()
+        return self._ingestor.ingest(...)
 
+    def search(query, limit, filters, ...):
+        # 委托给 Searcher.search()
+        return self._searcher.search(...)
+
+    # 为测试保留的后向兼容方法
+    def _build_item_chunks(...): ...
+    def _flush_batch(...): ...
+```
+
+### 4.4 ingestor.py - 数据索引
+
+```python
+class Ingestor:
+    def ingest(force_rebuild=False, limit=None, build_chunks_fn=None):
+        # 1. 从 SQLite 读取 items + attachments
+        # 2. 对每个 item 构建 chunks
+        # 3. 批量写入 ChromaDB
+
+    def _fetch_items_and_attachments_from_local_db(limit): ...
+    def _build_item_chunks(item, attachment_keys): ...
+    def _flush_batch(...): ...          # 实际写入逻辑
+    def flush_batch(...): ...           # 公开委托方法
+    def flush_refs_batch(...): ...      # 参考文献写入
+```
+
+### 4.5 searcher.py - 语义搜索
+
+```python
+class Searcher:
     def search(query, limit, filters,
                include_citation_references=True,
                citation_max_items_per_result=8):
@@ -159,7 +232,40 @@ class AdvancedRAGRetriever:
         # 2. 按 item_key 聚合，meta 权重 0.7
         # 3. FlashRank Rerank（可选）
         # 4. 解析正文引用编号，查 refs 集合获取参考文献原文
+
+    def _hydrate_items(item_keys): ...  # 从本地 DB 或 API 获取元数据
+    def _resolve_citations(...): ...     # 解析引用编号
 ```
+
+### 4.6 compat.py - 测试兼容层
+
+提供可被 monkeypatch 的导入，支持测试注入：
+
+```python
+# compat.py
+def __getattr__(name: str):
+    if name == "is_local_mode":
+        # 检查 advanced_rag 是否被 monkeypatch
+        ...
+        return func
+    if name == "LocalZoteroReader":
+        # 检查 advanced_rag 是否被 monkeypatch
+        ...
+        return cls
+```
+
+**使用方式**：
+
+```python
+# Ingestor / Searcher 中
+from . import compat
+
+if compat.is_local_mode():
+    with compat.LocalZoteroReader(db_path=...) as reader:
+        ...
+```
+
+测试时可以 monkeypatch `advanced_rag.is_local_mode` 和 `advanced_rag.LocalZoteroReader`。
 
 ## 5. ChromaDB 存储结构
 

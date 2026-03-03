@@ -110,7 +110,13 @@ class Searcher:
         if is_local_mode():
             try:
                 with LocalZoteroReader(db_path=self.db_path) as reader:
-                    local_items = reader.get_items_with_text(include_fulltext=False)
+                    # Use get_items_by_keys to fetch only needed items
+                    if hasattr(reader, 'get_items_by_keys'):
+                        local_items = reader.get_items_by_keys(item_keys)
+                    else:
+                        # Fallback: get all and filter (old behavior)
+                        local_items = reader.get_items_with_text(include_fulltext=False)
+                        local_items = [item for item in local_items if item.key in set(item_keys)]
                 local_by_key = {item.key: item for item in local_items}
                 for item_key in item_keys:
                     local_item = local_by_key.get(item_key)

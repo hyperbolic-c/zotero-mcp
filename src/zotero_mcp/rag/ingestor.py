@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from zotero_mcp.chroma_client import CHROMA_GET_MAX_BATCH
-from zotero_mcp.local_db import LocalZoteroReader
-from zotero_mcp.utils import format_creators, is_local_mode, IndexingProgress
+from zotero_mcp.utils import format_creators, IndexingProgress
+
+# Import from compat to allow test monkeypatching
+# Note: We import the module, not the attributes, so they can be dynamically resolved
+from . import compat
 
 from .chunkers import get_chunking_backend
 
@@ -222,11 +225,11 @@ class Ingestor:
         return docs, metas, ids, ref_docs, ref_metas, ref_ids
 
     def _collect_attachment_map(self, limit: int | None = None) -> dict[str, list[str]]:
-        if not is_local_mode():
+        if not compat.is_local_mode():
             return {}
         item_to_attachments: dict[str, list[str]] = {}
         try:
-            with LocalZoteroReader(db_path=self.db_path) as reader:
+            with compat.LocalZoteroReader(db_path=self.db_path) as reader:
                 local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
                 for local_item in local_items:
                     keys = [
@@ -274,7 +277,7 @@ class Ingestor:
         except Exception:
             pass
 
-        with LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
+        with compat.LocalZoteroReader(db_path=zotero_db_path, pdf_max_pages=pdf_max_pages) as reader:
             sys.stderr.write("Scanning local Zotero database for items...\n")
             local_items = reader.get_items_with_text(limit=limit, include_fulltext=False)
             sys.stderr.write(f"Found {len(local_items)} candidate items.\n")

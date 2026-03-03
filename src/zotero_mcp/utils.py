@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+import logging
 import os
 import re
 from contextlib import contextmanager
@@ -21,6 +22,14 @@ except ImportError:
     RICH_AVAILABLE = False
 
 
+# Logger names to suppress during indexing
+INDEXING_LOGGERS = [
+    "zotero_mcp.chroma_client",
+    "zotero_mcp.indexer",
+    "zotero_mcp.retrievers.advanced_rag",
+]
+
+
 class IndexingProgress:
     """Generic indexing progress display using Rich.
 
@@ -36,6 +45,7 @@ class IndexingProgress:
         total: int = 0,
         show_stats: bool = True,
         console: Optional[Any] = None,
+        suppress_logging: bool = True,
     ):
         self.description = description
         self.total = total
@@ -43,8 +53,28 @@ class IndexingProgress:
         self._console = console
         self._progress: Optional[Any] = None
         self._task = None
+        self._suppress_logging = suppress_logging
+        self._previous_levels: Dict[str, int] = {}
+
+    def _suppress_verbose_logging(self):
+        """Suppress INFO/WARNING logs during indexing to keep progress bar clean."""
+        for logger_name in INDEXING_LOGGERS:
+            logger = logging.getLogger(logger_name)
+            self._previous_levels[logger_name] = logger.level
+            # Only suppress if currently at default level (not explicitly set)
+            if logger.level < logging.WARNING:
+                logger.setLevel(logging.WARNING)
+
+    def _restore_logging(self):
+        """Restore previous logging levels."""
+        for logger_name, level in self._previous_levels.items():
+            logger = logging.getLogger(logger_name)
+            logger.setLevel(level)
 
     def __enter__(self):
+        if self._suppress_logging:
+            self._suppress_verbose_logging()
+
         if not RICH_AVAILABLE:
             return self
 
@@ -85,6 +115,8 @@ class IndexingProgress:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._suppress_logging:
+            self._restore_logging()
         if self._progress:
             self._progress.__exit__(exc_type, exc_val, exc_tb)
         return False

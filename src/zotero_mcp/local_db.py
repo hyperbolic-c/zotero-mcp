@@ -500,6 +500,90 @@ class LocalZoteroReader:
                 return item
         return None
 
+    def get_items_by_keys(self, keys: list[str]) -> list[ZoteroItem]:
+        """
+        Get specific items by their Zotero keys.
+
+        Args:
+            keys: List of Zotero item keys.
+
+        Returns:
+            List of ZoteroItem objects for the requested keys.
+        """
+        if not keys:
+            return []
+
+        conn = self._get_connection()
+
+        # Use IN clause to filter by keys - safe since keys are alphanumeric
+        keys_str = ", ".join(f"'{k}'" for k in keys)
+        query = f"""
+        SELECT
+            i.itemID,
+            i.key,
+            i.itemTypeID,
+            it.typeName as item_type,
+            i.dateAdded,
+            i.dateModified,
+            title_val.value as title,
+            abstract_val.value as abstract,
+            extra_val.value as extra,
+            doi_val.value as doi,
+            GROUP_CONCAT(n.note, ' ') as notes,
+            GROUP_CONCAT(
+                CASE
+                    WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL
+                    THEN c.lastName || ', ' || c.firstName
+                    WHEN c.lastName IS NOT NULL
+                    THEN c.lastName
+                    ELSE NULL
+                END, '; '
+            ) as creators
+        FROM items i
+        JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+        LEFT JOIN itemData title_data ON i.itemID = title_data.itemID AND title_data.fieldID = 1
+        LEFT JOIN itemDataValues title_val ON title_data.valueID = title_val.valueID
+        LEFT JOIN fields abstract_f ON abstract_f.fieldName = 'abstractNote'
+        LEFT JOIN itemData abstract_data ON i.itemID = abstract_data.itemID AND abstract_data.fieldID = abstract_f.fieldID
+        LEFT JOIN itemDataValues abstract_val ON abstract_data.valueID = abstract_val.valueID
+        LEFT JOIN fields extra_f ON extra_f.fieldName = 'extra'
+        LEFT JOIN itemData extra_data ON i.itemID = extra_data.itemID AND extra_data.fieldID = extra_f.fieldID
+        LEFT JOIN itemDataValues extra_val ON extra_data.valueID = extra_val.valueID
+        LEFT JOIN fields doi_f ON doi_f.fieldName = 'DOI'
+        LEFT JOIN itemData doi_data ON i.itemID = doi_data.itemID AND doi_data.fieldID = doi_f.fieldID
+        LEFT JOIN itemDataValues doi_val ON doi_data.valueID = doi_val.valueID
+        LEFT JOIN itemNotes n ON i.itemID = n.parentItemID OR i.itemID = n.itemID
+        LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
+        LEFT JOIN creators c ON ic.creatorID = c.creatorID
+        WHERE i.key IN ({keys_str})
+        GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
+                 title_val.value, abstract_val.value, extra_val.value
+        """
+
+        cursor = conn.execute(query)
+        items = []
+
+        for row in cursor:
+            item = ZoteroItem(
+                item_id=row['itemID'],
+                key=row['key'],
+                item_type_id=row['itemTypeID'],
+                item_type=row['item_type'],
+                doi=row['doi'],
+                title=row['title'],
+                abstract=row['abstract'],
+                creators=row['creators'],
+                fulltext=None,
+                fulltext_source=None,
+                notes=row['notes'],
+                extra=row['extra'],
+                date_added=row['dateAdded'],
+                date_modified=row['dateModified']
+            )
+            items.append(item)
+
+        return items
+
     def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
         """
         Simple text search through item content.

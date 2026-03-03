@@ -13,7 +13,7 @@ from typing import Any
 
 from zotero_mcp.chroma_client import CHROMA_GET_MAX_BATCH, ChromaClient
 from zotero_mcp.local_db import LocalZoteroReader
-from zotero_mcp.utils import format_creators, is_local_mode
+from zotero_mcp.utils import format_creators, is_local_mode, IndexingProgress
 
 from .base import BaseRetriever
 from .chunkers import ChunkingBackend, get_chunking_backend
@@ -503,10 +503,6 @@ class AdvancedRAGRetriever(BaseRetriever):
             attachment_map = self._collect_attachment_map(limit=limit)
 
         stats["total_items"] = len(items)
-        try:
-            sys.stderr.write(f"Total items to index: {stats['total_items']}\n")
-        except Exception:
-            pass
 
         batch_docs: list[str] = []
         batch_metas: list[dict[str, Any]] = []
@@ -516,73 +512,81 @@ class AdvancedRAGRetriever(BaseRetriever):
         batch_ref_ids: list[str] = []
         batch_size = int(self.ingest_cfg.get("batch_size", 500))
         sleep_seconds = float(self.ingest_cfg.get("sleep_between_batches", 1.0))
-        next_milestone = 10 if stats["total_items"] >= 10 else stats["total_items"]
-        seen_items = 0
 
-        for item in items:
-            try:
-                item_key = item.get("key", "")
-                if not item_key:
-                    stats["skipped_items"] += 1
-                    continue
-
-                # 1. Clean up old chunks for this item to prevent residuals
-                # (A key:meta:0 might remain if upserted, but older indexed chunks like
-                # A:att:5 from a previous chunking run would stay forever without this).
-                if not force_rebuild:
-                    try:
-                        self.chroma_client.delete_by_item_key(item_key)
-                        if self.refs_client is not self.chroma_client:
-                            self.refs_client.delete_by_metadata({"item_key": item_key})
-                    except Exception as exc:
-                        logger.warning("Error cleaning up old chunks for item %s: %s", item_key, exc)
-
-                # 2. Build new chunks
-                docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
-                    item, attachment_map.get(item_key, [])
-                )
-                if not docs:
-                    stats["skipped_items"] += 1
-                    continue
-
-                batch_docs.extend(docs)
-                batch_metas.extend(metas)
-                batch_ids.extend(ids)
-                batch_ref_docs.extend(ref_docs)
-                batch_ref_metas.extend(ref_metas)
-                batch_ref_ids.extend(ref_ids)
-                stats["processed_items"] += 1
-
-                if len(batch_ids) >= batch_size:
-                    self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-                    self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
-                    batch_docs.clear()
-                    batch_metas.clear()
-                    batch_ids.clear()
-                    batch_ref_docs.clear()
-                    batch_ref_metas.clear()
-                    batch_ref_ids.clear()
-                    if sleep_seconds > 0:
-                        time.sleep(sleep_seconds)
-            except Exception as exc:
-                stats["errors"] += 1
-                logger.warning("Error processing item %s: %s", item.get("key", "?"), exc, exc_info=True)
-            finally:
-                seen_items += 1
+        # Use IndexingProgress for cleaner display
+        with IndexingProgress(
+            description=f"Indexing {stats['total_items']} items",
+            total=stats["total_items"],
+        ) as progress:
+            for item in items:
                 try:
-                    while seen_items >= next_milestone and next_milestone > 0:
-                        sys.stderr.write(
-                            f"Processed: {next_milestone}/{stats['total_items']} "
-                            f"indexed_items:{stats['processed_items']} "
-                            f"skipped:{stats['skipped_items']} "
-                            f"errors:{stats['errors']}\n"
+                    item_key = item.get("key", "")
+                    if not item_key:
+                        stats["skipped_items"] += 1
+                        progress.update(
+                            indexed=stats["processed_items"],
+                            skipped=stats["skipped_items"],
+                            errors=stats["errors"]
                         )
-                        next_milestone += 10
-                        if next_milestone > stats["total_items"]:
-                            next_milestone = stats["total_items"]
-                            break
-                except Exception:
-                    pass
+                        continue
+
+                    # 1. Clean up old chunks for this item to prevent residuals
+                    # (A key:meta:0 might remain if upserted, but older indexed chunks like
+                    # A:att:5 from a previous chunking run would stay forever without this).
+                    if not force_rebuild:
+                        try:
+                            self.chroma_client.delete_by_item_key(item_key)
+                            if self.refs_client is not self.chroma_client:
+                                self.refs_client.delete_by_metadata({"item_key": item_key})
+                        except Exception as exc:
+                            logger.warning("Error cleaning up old chunks for item %s: %s", item_key, exc)
+
+                    # 2. Build new chunks
+                    docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
+                        item, attachment_map.get(item_key, [])
+                    )
+                    if not docs:
+                        stats["skipped_items"] += 1
+                        progress.update(
+                            indexed=stats["processed_items"],
+                            skipped=stats["skipped_items"],
+                            errors=stats["errors"]
+                        )
+                        continue
+
+                    batch_docs.extend(docs)
+                    batch_metas.extend(metas)
+                    batch_ids.extend(ids)
+                    batch_ref_docs.extend(ref_docs)
+                    batch_ref_metas.extend(ref_metas)
+                    batch_ref_ids.extend(ref_ids)
+                    stats["processed_items"] += 1
+
+                    progress.update(
+                        indexed=stats["processed_items"],
+                        skipped=stats["skipped_items"],
+                        errors=stats["errors"]
+                    )
+
+                    if len(batch_ids) >= batch_size:
+                        self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
+                        self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+                        batch_docs.clear()
+                        batch_metas.clear()
+                        batch_ids.clear()
+                        batch_ref_docs.clear()
+                        batch_ref_metas.clear()
+                        batch_ref_ids.clear()
+                        if sleep_seconds > 0:
+                            time.sleep(sleep_seconds)
+                except Exception as exc:
+                    stats["errors"] += 1
+                    logger.warning("Error processing item %s: %s", item.get("key", "?"), exc, exc_info=True)
+                    progress.update(
+                        indexed=stats["processed_items"],
+                        skipped=stats["skipped_items"],
+                        errors=stats["errors"]
+                    )
 
         if batch_ids:
             self._flush_batch(batch_docs, batch_metas, batch_ids, stats)

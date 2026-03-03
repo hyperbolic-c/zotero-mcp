@@ -222,7 +222,7 @@ class AdvancedRAGRetriever(BaseRetriever):
 
                     if len(batch_ids) >= batch_size:
                         self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-                        self._ingestor._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+                        self._ingestor.flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
                         batch_docs.clear()
                         batch_metas.clear()
                         batch_ids.clear()
@@ -242,7 +242,7 @@ class AdvancedRAGRetriever(BaseRetriever):
 
         if batch_docs:
             self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-            self._ingestor._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+            self._ingestor.flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
 
         end_time = datetime.now()
         stats["duration"] = str(end_time - start_time)

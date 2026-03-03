@@ -368,12 +368,26 @@ class Ingestor:
             else:
                 stats["added_chunks"] += 1
 
-    def _flush_refs_batch(
+    def flush_batch(
+        self,
+        batch_docs: list[str],
+        batch_metas: list[dict[str, Any]],
+        batch_ids: list[str],
+        stats: dict[str, Any],
+    ) -> None:
+        """Flush document batch to ChromaDB.
+
+        Public wrapper around _flush_batch.
+        """
+        self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
+
+    def flush_refs_batch(
         self,
         ref_docs: list[str],
         ref_metas: list[dict[str, Any]],
         ref_ids: list[str],
     ) -> None:
+        """Flush reference batch to ChromaDB."""
         if not ref_ids:
             return
         for start in range(0, len(ref_ids), CHROMA_MAX_BATCH):

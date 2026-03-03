@@ -470,19 +470,39 @@ def main():
             col = client.collection
 
             if args.stats:
-                meta = col.get(include=["metadatas"])  # type: ignore
-                metas = meta.get("metadatas", [])
                 console.print(Panel("[bold blue]Semantic DB Inspection (Stats)[/bold blue]", expand=False))
-                
-                info = client.get_collection_info()
-                console.print(f"Collection: [blue]{info.get('name')}[/blue] @ [dim]{info.get('persist_directory')}[/dim]")
-                console.print(f"Total Count: [bold blue]{info.get('count')}[/bold blue]")
 
-                item_types = [ (m or {}).get("item_type", "") for m in metas ]
+                info = client.get_collection_info()
+                total_count = info.get('count', 0)
+                console.print(f"Collection: [blue]{info.get('name')}[/blue] @ [dim]{info.get('persist_directory')}[/dim]")
+                console.print(f"Total Count: [bold blue]{total_count}[/bold blue]")
+
+                # Fetch metadata in batches to avoid SQL variable limit
+                batch_size = 1000
+                item_types = []
+                chunk_kinds = []
+
+                for offset in range(0, total_count, batch_size):
+                    try:
+                        batch = col.get(limit=batch_size, offset=offset, include=["metadatas"])
+                        for m in batch.get("metadatas", []):
+                            if m:
+                                item_types.append(m.get("item_type", ""))
+                                chunk_kinds.append(m.get("chunk_kind", ""))
+                    except Exception as e:
+                        console.print(f"[warning]Warning: Error fetching batch at {offset}: {e}[/warning]")
+                        break
+
                 ct_types = Counter(item_types)
                 console.print("\n[bold]Item types:[/bold]")
                 for t, c in ct_types.most_common(10):
                     console.print(f"  • {t or '(missing)'}: [blue]{c}[/blue]")
+
+                if chunk_kinds:
+                    ct_kinds = Counter(chunk_kinds)
+                    console.print("\n[bold]Chunk kinds:[/bold]")
+                    for k, c in ct_kinds.most_common():
+                        console.print(f"  • {k}: [blue]{c}[/blue]")
 
                 return
 

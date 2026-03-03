@@ -12,6 +12,7 @@ from .compat import is_local_mode
 
 from .reference_parser import extract_numeric_citation_ids
 from .reranker import CandidateChunk
+from .utils import parse_creators_string
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +35,9 @@ class Searcher:
         self.config = config
         self.reranker = reranker
         self.get_item_by_key_fn = get_item_by_key_fn
-        self.parse_creators_fn = parse_creators_fn or self._default_parse_creators_string
+        self.parse_creators_fn = parse_creators_fn or parse_creators_string
         self.db_path = db_path
         self.retrieve_cfg = config.get("retrieve", {})
-
-    @staticmethod
-    def _default_parse_creators_string(creators_str: str) -> list[dict[str, str]]:
-        if not creators_str:
-            return []
-        creators: list[dict[str, str]] = []
-        for creator in creators_str.split(";"):
-            creator = creator.strip()
-            if not creator:
-                continue
-            if "," in creator:
-                last, first = creator.split(",", 1)
-                creators.append(
-                    {
-                        "creatorType": "author",
-                        "firstName": first.strip(),
-                        "lastName": last.strip(),
-                    }
-                )
-            else:
-                creators.append({"creatorType": "author", "name": creator})
-        return creators
 
     def _refs_get_by_ids(self, ids: list[str]) -> dict[str, list[Any]]:
         """Fetch reference documents by IDs in batches."""

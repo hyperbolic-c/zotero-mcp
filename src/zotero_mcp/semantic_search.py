@@ -8,7 +8,7 @@ from typing import Any
 from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .indexer import get_advanced_rag_defaults, load_semantic_config
-from .retrievers.factory import create_retriever
+from .rag.factory import create_retriever
 from .utils import parse_creators_string
 
 logger = logging.getLogger(__name__)

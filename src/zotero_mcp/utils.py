@@ -26,7 +26,7 @@ except ImportError:
 INDEXING_LOGGERS = [
     "zotero_mcp.chroma_client",
     "zotero_mcp.indexer",
-    "zotero_mcp.retrievers.advanced_rag",
+    "zotero_mcp.rag.advanced_rag",
 ]
 
 

@@ -16,7 +16,7 @@ from .chroma_client import ChromaClient, create_chroma_client
 from .client import get_zotero_client
 from .utils import format_creators, is_local_mode, parse_creators_string
 from .local_db import LocalZoteroReader
-from .retrievers.factory import create_retriever
+from .rag.factory import create_retriever
 
 logger = logging.getLogger(__name__)
 

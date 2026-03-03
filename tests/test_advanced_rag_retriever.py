@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from zotero_mcp.retrievers.advanced_rag import AdvancedRAGRetriever, CandidateChunk
+from zotero_mcp.rag.advanced_rag import AdvancedRAGRetriever, CandidateChunk
 
 
 class FakeChromaClient:
@@ -154,7 +154,7 @@ class FakeReader:
 
 
 def _make_retriever(md_root, monkeypatch, reranker_enabled=False):
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
@@ -178,7 +178,7 @@ def test_md_root_default_is_empty_string():
 def test_ingest_warns_when_md_root_empty(monkeypatch, caplog, tmp_path):
     """ingest_data warns the user when retriever_mode=advanced_rag but md_root is empty."""
     import logging
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
@@ -187,7 +187,7 @@ def test_ingest_warns_when_md_root_empty(monkeypatch, caplog, tmp_path):
     client = FakeChromaClient()
     retriever = _build_advanced_retriever(engine, client)
 
-    with caplog.at_level(logging.WARNING, logger="zotero_mcp.retrievers.advanced_rag"):
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.rag.advanced_rag"):
         retriever.ingest_data()
 
     assert any("md_root" in record.message for record in caplog.records), (
@@ -216,7 +216,7 @@ def test_ingest_stats_use_chunk_keys(monkeypatch, tmp_path):
 def test_ingest_logs_item_errors(monkeypatch, tmp_path, caplog):
     """Errors processing individual items must be logged, not silently counted."""
     import logging
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
@@ -235,7 +235,7 @@ def test_ingest_logs_item_errors(monkeypatch, tmp_path, caplog):
 
     monkeypatch.setattr(retriever, "_build_item_chunks", _broken_build)
 
-    with caplog.at_level(logging.WARNING, logger="zotero_mcp.retrievers.advanced_rag"):
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.rag.advanced_rag"):
         stats = retriever.ingest_data()
 
     assert stats["errors"] == 1
@@ -249,7 +249,7 @@ def test_ingest_logs_item_errors(monkeypatch, tmp_path, caplog):
 def test_reranker_init_error_distinguishes_import_vs_runtime(monkeypatch):
     """_init_reranker returns 'degraded:package_missing' for ImportError,
     'degraded:init_error:...' for other exceptions."""
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     engine = FakeEngine("")
     engine.semantic_config["advanced_rag"]["reranker"] = {
@@ -290,7 +290,7 @@ def test_reranker_init_error_distinguishes_import_vs_runtime(monkeypatch):
 def test_rerank_passes_top_n_to_ranker(monkeypatch, tmp_path):
     """_rerank must pass top_n from config to ranker.rank()."""
     import types
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     engine = FakeEngine(str(tmp_path))
     engine.semantic_config["advanced_rag"]["reranker"] = {
@@ -363,7 +363,7 @@ def test_advanced_rag_ingest_and_item_level_search(monkeypatch, tmp_path):
     (att_dir / "a.md").write_text("# Intro\nFirst part text.", encoding="utf-8")
     (att_dir / "b.md").write_text("## More\nSecond part text.", encoding="utf-8")
 
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
@@ -402,7 +402,7 @@ class BatchTrackingChromaClient(FakeChromaClient):
 
 
 def _make_retriever_with_batch_cfg(md_root, monkeypatch, batch_size, sleep_seconds=0.0):
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
@@ -445,7 +445,7 @@ def test_ingest_flushes_in_multiple_batches_when_batch_size_exceeded(monkeypatch
 def test_ingest_sleeps_between_batches(monkeypatch, tmp_path):
     """When sleep_between_batches > 0, time.sleep is called between batch flushes."""
     import time
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     md_root = tmp_path / "md"
     att_dir = md_root / "ATT1"
@@ -456,7 +456,7 @@ def test_ingest_sleeps_between_batches(monkeypatch, tmp_path):
     )
 
     sleep_calls: list[float] = []
-    monkeypatch.setattr("zotero_mcp.retrievers.advanced_rag.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("zotero_mcp.rag.advanced_rag.time.sleep", lambda s: sleep_calls.append(s))
 
     retriever, client = _make_retriever_with_batch_cfg(
         md_root, monkeypatch, batch_size=1, sleep_seconds=0.5
@@ -476,7 +476,7 @@ def test_ingest_sleeps_between_batches(monkeypatch, tmp_path):
 
 def _make_retriever_with_chunk_cfg(md_root, monkeypatch, chunk_cfg: dict):
     """Helper: build AdvancedRAGRetriever with a custom chunk config."""
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)
@@ -622,8 +622,8 @@ def test_flush_batch_splits_oversized_single_item_batch(monkeypatch, tmp_path):
     than ChromaDB's hard limit (e.g. 45779 > 5461).  The fix must ensure that
     upsert_documents is never called with more than CHROMA_MAX_BATCH ids at once.
     """
-    from zotero_mcp.retrievers import advanced_rag
-    from zotero_mcp.retrievers.advanced_rag import CHROMA_MAX_BATCH
+    from zotero_mcp.rag import advanced_rag
+    from zotero_mcp.rag.advanced_rag import CHROMA_MAX_BATCH
 
     # Use a tiny limit so we can exercise the split without huge data
     tiny_limit = 5
@@ -670,7 +670,7 @@ def test_chroma_max_batch_derived_from_sqlite_limit():
     We mirror that formula so our constant stays in sync.
     """
     import sqlite3
-    from zotero_mcp.retrievers.advanced_rag import CHROMA_MAX_BATCH
+    from zotero_mcp.rag.advanced_rag import CHROMA_MAX_BATCH
 
     con = sqlite3.connect(":memory:")
     sqlite_var_limit = None
@@ -801,7 +801,7 @@ def test_force_rebuild_resets_both_collections(monkeypatch, tmp_path):
     )
     (att_dir / "a.md").write_text(content, encoding="utf-8")
 
-    from zotero_mcp.retrievers import advanced_rag
+    from zotero_mcp.rag import advanced_rag
 
     monkeypatch.setattr(advanced_rag, "is_local_mode", lambda: True)
     monkeypatch.setattr(advanced_rag, "LocalZoteroReader", FakeReader)

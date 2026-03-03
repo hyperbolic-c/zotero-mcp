@@ -5,7 +5,10 @@ from typing import Any
 
 from zotero_mcp.chroma_client import CHROMA_GET_MAX_BATCH
 from zotero_mcp.local_db import LocalZoteroReader
-from zotero_mcp.utils import format_creators, is_local_mode
+from zotero_mcp.utils import format_creators
+
+# Import from compat to allow test monkeypatching
+from .compat import is_local_mode
 
 from .reference_parser import extract_numeric_citation_ids
 from .reranker import CandidateChunk

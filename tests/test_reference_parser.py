@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from zotero_mcp.retrievers.reference_parser import (
+from zotero_mcp.rag.reference_parser import (
     extract_numeric_citation_ids,
     find_reference_block_cutpoint,
     strip_and_extract_references,

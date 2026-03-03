@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from zotero_mcp.retrievers.chunker_types import (
+from zotero_mcp.rag.chunker_types import (
     BACKEND_LANGCHAIN,
     BACKEND_LEGACY,
     STRATEGY_MARKDOWN_RECURSIVE_V1,
     STRATEGY_SEMANTIC_V1,
 )
-from zotero_mcp.retrievers.chunkers import (
+from zotero_mcp.rag.chunkers import (
     LangChainMarkdownRecursiveChunker,
     LegacyChunkingBackend,
     get_chunking_backend,

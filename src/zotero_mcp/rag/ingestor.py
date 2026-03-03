@@ -401,8 +401,15 @@ class Ingestor:
         self,
         force_rebuild: bool = False,
         limit: int | None = None,
+        build_chunks_fn: Any = None,
     ) -> dict[str, Any]:
-        """Ingest items into the vector database."""
+        """Ingest items into the vector database.
+
+        Args:
+            force_rebuild: If True, reset collections before indexing.
+            limit: Limit number of items to index.
+            build_chunks_fn: Optional callback to build chunks, for testing.
+        """
         start_time = datetime.now()
         stats = {
             "total_items": 0,
@@ -483,7 +490,8 @@ class Ingestor:
                             logger.warning("Error cleaning up old chunks for item %s: %s", item_key, exc)
 
                     # 2. Build new chunks
-                    docs, metas, ids, ref_docs, ref_metas, ref_ids = self._build_item_chunks(
+                    build_fn = build_chunks_fn or self._build_item_chunks
+                    docs, metas, ids, ref_docs, ref_metas, ref_ids = build_fn(
                         item, attachment_map.get(item_key, [])
                     )
                     if not docs:
@@ -511,7 +519,7 @@ class Ingestor:
 
                     if len(batch_ids) >= batch_size:
                         self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-                        self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+                        self.flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
                         batch_docs.clear()
                         batch_metas.clear()
                         batch_ids.clear()
@@ -531,7 +539,7 @@ class Ingestor:
 
         if batch_ids:
             self._flush_batch(batch_docs, batch_metas, batch_ids, stats)
-            self._flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
+            self.flush_refs_batch(batch_ref_docs, batch_ref_metas, batch_ref_ids)
 
         end_time = datetime.now()
         stats["duration"] = str(end_time - start_time)

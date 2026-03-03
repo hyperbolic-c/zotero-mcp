@@ -91,16 +91,6 @@ class AdvancedRAGRetriever(BaseRetriever):
         # Backward compatibility: expose reranker for tests
         self._ranker = self.reranker._ranker
 
-        # Cache config for backward compatibility
-        self.chunk_cfg = self.config.get("chunk", {})
-        self.retrieve_cfg = self.config.get("retrieve", {})
-        self.ingest_cfg = self.config.get("ingest", {})
-        self.reranker_cfg = self.config.get("reranker", {})
-
-        # Expose chunking backend for _build_item_chunks method
-        from .chunkers import get_chunking_backend
-        self._chunking_backend = get_chunking_backend(self.chunk_cfg)
-
     def ingest_data(
         self,
         force_rebuild: bool = False,

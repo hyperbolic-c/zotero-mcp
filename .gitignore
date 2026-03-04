@@ -45,3 +45,6 @@ CLAUDE.md
 .claude/
 docs/plans/
 .worktrees/
+
+# Separate projects
+literature-rag-mcp/
